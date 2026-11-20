@@ -314,3 +314,52 @@ export async function transcribeVoiceApi(audio: Blob): Promise<string> {
   }
   return data.transcript;
 }
+
+export async function speakVoiceApi(
+  text: string,
+  language: 'ta-IN' | 'en-IN'
+): Promise<{ audio_base64: string; mime_type: string }> {
+  const res = await fetch('/api/voice/speak', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, language }),
+  });
+  const data = await parseJsonSafe<{
+    ok: boolean;
+    audio_base64?: string;
+    mime_type?: string;
+    error?: string;
+  }>(res);
+  if (!res.ok || !data.ok || !data.audio_base64 || !data.mime_type) {
+    throw new ApiError(data.error || 'Voice playback failed.', res.status);
+  }
+  return { audio_base64: data.audio_base64, mime_type: data.mime_type };
+}
+
+export async function dispatchAutomationApi(params: {
+  sessionId: string;
+  confirmDispatch: boolean;
+  recipientEmail?: string;
+}): Promise<{ session: SessionState; message: string }> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(params.sessionId)}/automate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      confirmDispatch: params.confirmDispatch,
+      recipientEmail: params.recipientEmail,
+    }),
+  });
+  const data = await parseJsonSafe<{
+    ok: boolean;
+    session?: SessionState;
+    message?: string;
+    error?: string;
+  }>(res);
+  if (!res.ok || !data.ok || !data.session) {
+    throw new ApiError(data.error || 'Automation dispatch failed.', res.status);
+  }
+  return {
+    session: data.session,
+    message: data.message || 'Compliance reminder dispatched.',
+  };
+}

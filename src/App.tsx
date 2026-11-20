@@ -5,6 +5,11 @@ import { BidCheckModal } from './components/BidCheckModal';
 import { AuthButton } from './components/AuthButton';
 import { BidWorkspacePanel, type WorkspaceTab } from './components/BidWorkspacePanel';
 import {
+  FullBrandLockupMark,
+  PrimaryEmblemMark,
+  TamilNaduLightningCloud,
+} from './components/BrandMarks';
+import {
   authenticatedFetch,
   checkServerHealth,
   fetchSessionApi,
@@ -190,6 +195,7 @@ export default function App() {
   const midImgRef = useRef<HTMLImageElement>(null);
   const frontLayerRef = useRef<HTMLDivElement>(null);
   const frontImgRef = useRef<HTMLImageElement>(null);
+  const sideMottoRef = useRef<HTMLParagraphElement>(null);
 
   const [riponMaskSrc, setRiponMaskSrc] = useState<string>('');
   const [maskReady, setMaskReady] = useState<boolean>(false);
@@ -252,8 +258,8 @@ export default function App() {
       // ignore storage error
     }
     setBidModalOpen(false);
-    setActiveNav('Chat');
-    setWorkspaceTab('Chat');
+    setActiveNav('Report');
+    setWorkspaceTab('Findings');
     setWorkspaceOpen(true);
   }, []);
 
@@ -620,6 +626,14 @@ export default function App() {
         { offset: 0, opacity: 0, transform: 'translateY(-6px)' },
         { offset: o(2450), opacity: 0, transform: 'translateY(-6px)', easing: 'ease-out' },
         { offset: o(2750), opacity: 1, transform: 'translateY(0px)' },
+        { offset: 1, opacity: 1, transform: 'translateY(0px)' },
+      ]);
+
+      // Side motto fade in after balcony opens
+      createAnim(sideMottoRef.current, [
+        { offset: 0, opacity: 0, transform: 'translateY(6px)' },
+        { offset: o(4200), opacity: 0, transform: 'translateY(6px)', easing: 'ease-out' },
+        { offset: o(5400), opacity: 1, transform: 'translateY(0px)' },
         { offset: 1, opacity: 1, transform: 'translateY(0px)' },
       ]);
 
@@ -991,6 +1005,9 @@ export default function App() {
               />
             </>
           )}
+          <div className="tn-lightning-cloud" aria-hidden="true">
+            <TamilNaduLightningCloud className="tn-lightning-cloud-svg" />
+          </div>
           <div ref={topShadeRef} className="top-shade" />
         </div>
 
@@ -1084,8 +1101,15 @@ export default function App() {
             className="stage-media"
             draggable={false}
           />
+          <div className="coat-brand-overlay" aria-hidden="true">
+            <PrimaryEmblemMark className="coat-emblem" />
+          </div>
         </div>
       </div>
+
+      <p ref={sideMottoRef} className="side-motto" aria-hidden="true">
+        “Make your papers speak clearly.”
+      </p>
 
       {/* Opening layer: original aerial still + tilt video */}
       <div
@@ -1134,8 +1158,14 @@ export default function App() {
 
       {/* Navigation pinned to viewport */}
       <header ref={navRef} className="nav-bar">
-        <a href="/" onClick={handleWordmarkClick} className="nav-wordmark">
-          NAMMA TENDER
+        <a
+          href="/"
+          onClick={handleWordmarkClick}
+          className="nav-wordmark"
+          aria-label="Namma Tender — Home"
+          title="Namma Tender"
+        >
+          <FullBrandLockupMark compact className="nav-brand-lockup" />
         </a>
 
         <nav className="nav-pill-bar" aria-label="Primary navigation">
@@ -1230,7 +1260,13 @@ export default function App() {
             }}
             className="nav-cta-btn"
           >
-            {activeSession ? 'Open Bid Rescue' : t.ctaButton}
+            {activeSession
+              ? language === 'Tam'
+                ? 'ஏல மீட்பு திற'
+                : language === 'Hin'
+                  ? 'बिड रेस्क्यू खोलें'
+                  : 'Open Bid Rescue'
+              : t.ctaButton}
           </button>
         </div>
       </header>

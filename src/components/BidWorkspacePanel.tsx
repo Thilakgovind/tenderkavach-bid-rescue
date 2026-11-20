@@ -1,32 +1,38 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  AlertTriangle,
+  AlertCircle,
   CheckCircle2,
+  ChevronDown,
   Clock,
   Download,
   FileCheck2,
   FileUp,
-  History,
+  FileText,
   Loader2,
   MessageSquare,
   Mic,
   MicOff,
-  PlusCircle,
+  MinusCircle,
+  Plus,
   Send,
-  ShieldAlert,
+  Volume2,
   Wrench,
   X,
+  XCircle,
 } from 'lucide-react';
 import type { LanguageCode } from '../App';
+import { MonochromeSealStamp } from './BrandMarks';
 import {
   ApiError,
   type IntegrationBoundaries,
   type SessionState,
   type ValidationStatus,
+  dispatchAutomationApi,
   fetchReportPreviewApi,
   downloadReport,
   recordDecisionApi,
   sendChatMessageApi,
+  speakVoiceApi,
   transcribeVoiceApi,
   uploadCorrectedPdfApi,
 } from '../api/client';
@@ -75,51 +81,75 @@ function getSpeechRecognitionConstructor(): (new () => SpeechRecognitionInstance
   return typeof ctor === 'function' ? (ctor as new () => SpeechRecognitionInstance) : null;
 }
 
-const STATUS_STYLE: Record<ValidationStatus, string> = {
-  PASS: 'bg-emerald-950/70 text-emerald-200 border-emerald-400/40',
-  EXPIRED: 'bg-red-950/70 text-red-200 border-red-400/45',
-  MISSING: 'bg-red-950/70 text-red-200 border-red-400/45',
-  FAIL: 'bg-red-950/70 text-red-200 border-red-400/45',
-  MISMATCH: 'bg-orange-950/70 text-orange-200 border-orange-400/45',
-  REVIEW_REQUIRED: 'bg-amber-950/70 text-amber-200 border-amber-400/45',
-  NOT_APPLICABLE: 'bg-slate-900/70 text-slate-300 border-slate-500/35',
-};
+type DisplayCategory = 'PASS' | 'BLOCKER' | 'REVIEW' | 'NA';
 
-const URGENCY_STYLE = {
-  CRITICAL: 'bg-red-950/80 text-red-200 border-red-400/45',
-  HIGH: 'bg-orange-950/80 text-orange-200 border-orange-400/45',
-  MEDIUM: 'bg-amber-950/80 text-amber-200 border-amber-400/45',
-  LOW: 'bg-slate-900/80 text-slate-200 border-slate-500/40',
+function getDisplayCategory(status: ValidationStatus): DisplayCategory {
+  if (status === 'PASS') return 'PASS';
+  if (status === 'REVIEW_REQUIRED') return 'REVIEW';
+  if (status === 'NOT_APPLICABLE') return 'NA';
+  return 'BLOCKER';
+}
+
+const CHIP_META: Record<
+  DisplayCategory,
+  {
+    label: string;
+    classes: string;
+    Icon: typeof CheckCircle2;
+  }
+> = {
+  PASS: {
+    label: 'PASS',
+    classes: 'bg-emerald-950/60 text-emerald-200 border-emerald-500/40',
+    Icon: CheckCircle2,
+  },
+  BLOCKER: {
+    label: 'BLOCKER',
+    classes: 'bg-red-950/60 text-red-200 border-red-500/45',
+    Icon: XCircle,
+  },
+  REVIEW: {
+    label: 'REVIEW',
+    classes: 'bg-amber-950/60 text-amber-200 border-amber-500/45',
+    Icon: AlertCircle,
+  },
+  NA: {
+    label: 'N/A',
+    classes: 'bg-zinc-900 text-zinc-300 border-zinc-600/40',
+    Icon: MinusCircle,
+  },
 };
 
 const QUICK_PROMPTS: Record<LanguageCode, string[]> = {
-  Eng: [
-    'Can we still bid?',
-    'What is blocking us?',
-    'What should I fix first?',
-    'Explain R2',
-    'Generate my report',
-  ],
+  Eng: ['Can we still bid?', 'What should I fix first?', 'Explain R2', 'Generate my report'],
   Tam: [
     'நாம் இன்னும் ஏலம் போடலாமா?',
-    'நம்மை தடுப்பது எது?',
     'முதலில் எதை சரிசெய்ய வேண்டும்?',
     'R2 விளக்கு',
     'அறிக்கை உருவாக்கு',
   ],
-  Hin: [
-    'Can we still bid?',
-    'What is blocking us?',
-    'What should I fix first?',
-    'Explain R2',
-    'Generate my report',
-  ],
+  Hin: ['Can we still bid?', 'What should I fix first?', 'Explain R2', 'Generate my report'],
 };
+
+function shortRequirementLabel(text: string): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  const sentence = clean.split(/[.!?](?:\s|$)/)[0] || clean;
+  if (sentence.length <= 76) return sentence;
+  return `${sentence.slice(0, 73).trim()}…`;
+}
+
+function firstSentence(text: string | undefined): string {
+  if (!text) return 'Needs verification against tender terms.';
+  const clean = text.replace(/\s+/g, ' ').trim();
+  const first = clean.split(/[.!?](?:\s|$)/)[0] || clean;
+  if (first.length <= 125) return `${first}.`.replace(/\.\.$/, '.');
+  return `${first.slice(0, 122).trim()}…`;
+}
 
 export function BidWorkspacePanel({
   open,
   session,
-  initialTab = 'Chat',
+  initialTab = 'Findings',
   language,
   integrations,
   onClose,
@@ -128,6 +158,7 @@ export function BidWorkspacePanel({
   onClearSession,
 }: BidWorkspacePanelProps) {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>(initialTab);
+  const [expandedReqIds, setExpandedReqIds] = useState<Record<string, boolean>>({});
   const [messageInput, setMessageInput] = useState('');
   const [sendingChat, setSendingChat] = useState(false);
   const [chatError, setChatError] = useState('');
@@ -139,8 +170,14 @@ export function BidWorkspacePanel({
   const [decisionFeedbackMsg, setDecisionFeedbackMsg] = useState('');
   const [reportHtml, setReportHtml] = useState('');
   const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState('');
   const [listening, setListening] = useState(false);
   const [voiceNote, setVoiceNote] = useState('');
+  const [speakingTurnId, setSpeakingTurnId] = useState<string | null>(null);
+  const [n8nEmail, setN8nEmail] = useState('');
+  const [n8nAuthorized, setN8nAuthorized] = useState(false);
+  const [dispatchingN8n, setDispatchingN8n] = useState(false);
+  const [n8nStatusMsg, setN8nStatusMsg] = useState('');
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const correctionFileRef = useRef<HTMLInputElement>(null);
@@ -148,6 +185,7 @@ export function BidWorkspacePanel({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const voiceChunksRef = useRef<Blob[]>([]);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -194,16 +232,39 @@ export function BidWorkspacePanel({
       recognitionRef.current?.stop();
       mediaRecorderRef.current?.stop();
       mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      audioRef.current?.pause();
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
     };
   }, []);
 
   if (!open || !session) return null;
 
-  const blockersCount = session.validation.filter(
-    (v) => v.status !== 'PASS' && v.status !== 'NOT_APPLICABLE'
+  const hardBlockersCount = session.validation.filter(
+    (v) => v.status !== 'PASS' && v.status !== 'NOT_APPLICABLE' && v.status !== 'REVIEW_REQUIRED'
   ).length;
-  const passedCount = session.validation.filter((v) => v.status === 'PASS').length;
   const reviewCount = session.validation.filter((v) => v.status === 'REVIEW_REQUIRED').length;
+  const totalUnresolved = hardBlockersCount + reviewCount;
+
+  const statusParts: string[] = [];
+  if (hardBlockersCount > 0) {
+    statusParts.push(`${hardBlockersCount} ${hardBlockersCount === 1 ? 'blocker' : 'blockers'}`);
+  }
+  if (reviewCount > 0) {
+    statusParts.push(`${reviewCount} needs review`);
+  }
+  const overallStatusText = statusParts.length > 0 ? statusParts.join(', ') : 'Ready to review';
+
+  const daysLeftDisplay = session.deadline.timeRemainingText.replace(/\s*remaining$/i, ' left');
+
+  const nonSampleWarnings = session.warnings.filter(
+    (w) => !w.toUpperCase().startsWith('SAMPLE MODE ACTIVE')
+  );
+
+  const toggleExpandReq = (reqId: string) => {
+    setExpandedReqIds((prev) => ({ ...prev, [reqId]: !prev[reqId] }));
+  };
 
   const handleSendChat = async (textToSend?: string) => {
     const clean = (textToSend ?? messageInput).trim();
@@ -225,9 +286,9 @@ export function BidWorkspacePanel({
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        setChatError('Session state changed in another action. Please retry sending.');
+        setChatError('Session changed. Please send again.');
       } else {
-        setChatError(err instanceof Error ? err.message : 'Failed to process message.');
+        setChatError(err instanceof Error ? err.message : 'Could not send message.');
       }
       if (!textToSend) setMessageInput(clean);
     } finally {
@@ -238,7 +299,7 @@ export function BidWorkspacePanel({
   const handleCorrectedUpload = async (file: File | undefined) => {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith('.pdf')) {
-      setCorrectionStatus('Only .pdf files are accepted for corrected evidence.');
+      setCorrectionStatus('Only .pdf files can be checked.');
       return;
     }
     setUploadingCorrection(true);
@@ -253,12 +314,12 @@ export function BidWorkspacePanel({
       onSessionUpdate(res.session);
       setCorrectionStatus(
         res.affectedRequirements.length > 0
-          ? `Rechecked ${res.affectedRequirements.join(', ')} using "${file.name}" (${res.progressSteps.join(' → ')}).`
-          : `Ingested "${file.name}" — please select a requirement ID or check Findings for details.`
+          ? `Updated from "${file.name}".`
+          : `Checked "${file.name}". Select a requirement if needed.`
       );
       if (correctionFileRef.current) correctionFileRef.current.value = '';
     } catch (err) {
-      setCorrectionStatus(err instanceof Error ? err.message : 'Corrected PDF upload failed.');
+      setCorrectionStatus(err instanceof Error ? err.message : 'PDF upload failed.');
     } finally {
       setUploadingCorrection(false);
     }
@@ -276,17 +337,22 @@ export function BidWorkspacePanel({
         sessionId: session.sessionId,
         requirementId,
         action,
-        note: note || `${action} recorded from Findings panel`,
+        note: note || `${action} recorded`,
         language,
         revision: session.revision,
       });
       onSessionUpdate(res.session);
       setDecisionFeedbackMsg(
-        res.message || `Recorded ${action} for ${requirementId} (status unchanged until verified evidence changes).`
+        res.message || `Saved ${action} note. Status stays unchanged until evidence changes.`
       );
       setDecisionNoteByReq((prev) => ({ ...prev, [requirementId]: '' }));
     } catch (err) {
-      setDecisionFeedbackMsg(err instanceof Error ? err.message : 'Failed to record decision.');
+      const rawMsg = err instanceof Error ? err.message : '';
+      if (action === 'approve' && (/cannot approve/i.test(rawMsg) || (err instanceof ApiError && err.status === 422))) {
+        setDecisionFeedbackMsg("Can't approve. No supporting evidence for this item.");
+      } else {
+        setDecisionFeedbackMsg(rawMsg || 'Could not record decision.');
+      }
     } finally {
       setDecisionBusyReq(null);
     }
@@ -296,7 +362,7 @@ export function BidWorkspacePanel({
     if (listening) {
       if (mediaRecorderRef.current?.state === 'recording') {
         mediaRecorderRef.current.stop();
-        setVoiceNote('Transcribing your voice…');
+        setVoiceNote('Transcribing voice…');
       }
       recognitionRef.current?.stop();
       setListening(false);
@@ -305,7 +371,9 @@ export function BidWorkspacePanel({
     if (integrations?.sarvamVoice.connected && navigator.mediaDevices && typeof MediaRecorder !== 'undefined') {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : undefined });
+        const recorder = new MediaRecorder(stream, {
+          mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : undefined,
+        });
         voiceChunksRef.current = [];
         mediaStreamRef.current = stream;
         recorder.ondataavailable = (event) => {
@@ -314,28 +382,28 @@ export function BidWorkspacePanel({
         recorder.onstop = async () => {
           mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
           try {
-            const transcript = await transcribeVoiceApi(new Blob(voiceChunksRef.current, { type: recorder.mimeType || 'audio/webm' }));
+            const transcript = await transcribeVoiceApi(
+              new Blob(voiceChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+            );
             setMessageInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
-            setVoiceNote('Sarvam transcript is ready — review or edit it before sending.');
+            setVoiceNote('Transcript ready.');
           } catch (err) {
-            setVoiceNote(err instanceof Error ? err.message : 'Voice transcription failed. Please type your question.');
+            setVoiceNote(err instanceof Error ? err.message : 'Voice transcription failed.');
           }
         };
         mediaRecorderRef.current = recorder;
         recorder.start();
         setListening(true);
-        setVoiceNote('Listening with Sarvam. Tap the microphone again to transcribe.');
+        setVoiceNote('Listening… tap again to stop.');
         return;
       } catch {
-        setVoiceNote('Microphone permission was not granted. Please type your question.');
+        setVoiceNote('Microphone blocked. Type your question below.');
         return;
       }
     }
     const Ctor = getSpeechRecognitionConstructor();
     if (!Ctor) {
-      setVoiceNote(
-        'Browser speech recognition is unavailable here. Sarvam AI voice is not connected yet — type or paste Tamil/English directly below.'
-      );
+      setVoiceNote('Voice dictation is unavailable here. Type your question below.');
       return;
     }
     try {
@@ -347,12 +415,12 @@ export function BidWorkspacePanel({
         const transcript = e.results?.[0]?.[0]?.transcript?.trim() || '';
         if (transcript) {
           setMessageInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
-          setVoiceNote('Transcript placed in the box below — review or edit before sending.');
+          setVoiceNote('Transcript added.');
         }
       };
       rec.onerror = () => {
         setListening(false);
-        setVoiceNote('Microphone capture failed or permission denied. Please type your question.');
+        setVoiceNote('Microphone unavailable. Type your question below.');
       };
       rec.onend = () => {
         setListening(false);
@@ -360,231 +428,439 @@ export function BidWorkspacePanel({
       recognitionRef.current = rec;
       rec.start();
       setListening(true);
-      setVoiceNote(
-        `Listening (${rec.lang}). Speech goes into editable text before sending (Sarvam AI not connected).`
-      );
+      setVoiceNote('Listening…');
     } catch {
       setListening(false);
-      setVoiceNote('Could not start speech recognition. Please type your question.');
+      setVoiceNote('Could not start voice input.');
     }
   };
 
+  const handleSpeakTurn = async (turnId: string, text: string) => {
+    if (speakingTurnId === turnId) {
+      audioRef.current?.pause();
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      setSpeakingTurnId(null);
+      return;
+    }
+
+    const clipped = text.trim().slice(0, 2400);
+    if (!clipped) return;
+    setSpeakingTurnId(turnId);
+
+    if (integrations?.sarvamVoice.connected) {
+      try {
+        const res = await speakVoiceApi(clipped, language === 'Tam' ? 'ta-IN' : 'en-IN');
+        const audio = new Audio(`data:${res.mime_type};base64,${res.audio_base64}`);
+        audioRef.current = audio;
+        audio.onended = () => setSpeakingTurnId(null);
+        audio.onerror = () => setSpeakingTurnId(null);
+        await audio.play();
+        return;
+      } catch (err) {
+        setVoiceNote(err instanceof Error ? err.message : 'Voice playback unavailable.');
+        setSpeakingTurnId(null);
+        return;
+      }
+    }
+
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(clipped);
+      utter.lang = language === 'Tam' ? 'ta-IN' : language === 'Hin' ? 'hi-IN' : 'en-IN';
+      utter.onend = () => setSpeakingTurnId(null);
+      utter.onerror = () => setSpeakingTurnId(null);
+      window.speechSynthesis.speak(utter);
+      return;
+    }
+
+    setSpeakingTurnId(null);
+    setVoiceNote('Voice playback not supported.');
+  };
+
+  const handleDispatchN8n = async () => {
+    if (!n8nAuthorized || dispatchingN8n) return;
+    setDispatchingN8n(true);
+    setN8nStatusMsg('');
+    try {
+      const res = await dispatchAutomationApi({
+        sessionId: session.sessionId,
+        confirmDispatch: true,
+        recipientEmail: n8nEmail.trim() || undefined,
+      });
+      onSessionUpdate(res.session);
+      setN8nStatusMsg(res.message);
+      setN8nAuthorized(false);
+    } catch (err) {
+      setN8nStatusMsg(err instanceof Error ? err.message : 'Could not send reminder.');
+    } finally {
+      setDispatchingN8n(false);
+    }
+  };
+
+  const handleDownloadReport = () => {
+    setReportError('');
+    void downloadReport(session.sessionId).catch((error: Error) => setReportError(error.message));
+  };
+
+  const triggerCorrectedUploadPicker = () => {
+    correctionFileRef.current?.click();
+  };
+
+  const firstRescueItem = session.plan[0];
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-black/80 backdrop-blur-md"
+      className="tk-workspace fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-6 bg-black/80 backdrop-blur-md overflow-x-hidden"
       role="dialog"
       aria-modal="true"
-      aria-label="Namma Tender Bid Rescue Workspace"
+      aria-label="Namma Tender Workspace"
       onClick={onClose}
     >
       <div
-        className="relative flex flex-col w-full max-w-5xl h-[92svh] max-h-[860px] rounded-2xl bg-[#0e0c18]/97 border border-white/15 text-white shadow-2xl overflow-hidden"
+        className="relative flex flex-col w-full max-w-[960px] mx-auto h-[100svh] sm:h-[90svh] sm:max-h-[860px] sm:rounded-2xl bg-[#111019] border-0 sm:border sm:border-white/12 text-white shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Top Workspace Header */}
-        <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-3.5 border-b border-white/12 bg-[#131022]">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[10px] font-semibold tracking-wider uppercase ${
-                  session.mode === 'SAMPLE'
-                    ? 'bg-amber-950/80 text-amber-200 border-amber-400/50'
-                    : 'bg-emerald-950/80 text-emerald-200 border-emerald-400/50'
-                }`}
-              >
-                {session.mode === 'SAMPLE' ? 'SAMPLE MODE · FICTIONAL DATA' : 'LIVE MODE'}
-              </span>
-              <span className="text-[11px] font-mono text-white/60">
-                {session.profile.tenderReference || session.sessionId}
-              </span>
-              <span className="text-[11px] text-white/60 inline-flex items-center gap-1">
-                <Clock className="h-3 w-3 text-[#E0A458]" />
-                {session.deadline.timeRemainingText} (Deadline {session.deadline.confirmedDate})
-              </span>
+        {/* Hidden shared file input for Rescue & Chat PDF correction recheck */}
+        <input
+          ref={correctionFileRef}
+          type="file"
+          accept=".pdf,application/pdf"
+          className="sr-only"
+          disabled={uploadingCorrection}
+          onChange={(e) => handleCorrectedUpload(e.target.files?.[0])}
+        />
+
+        {/* Workspace Header: Company Name, Deadline + Days Left, One Overall Status */}
+        <header className="px-4 py-4 sm:px-6 sm:py-6 border-b border-white/10 bg-[#151320]">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-lg sm:text-xl font-bold text-white truncate">
+                  {session.profile.companyName}
+                </h2>
+                {session.mode === 'SAMPLE' && (
+                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-400/35 text-[12px] font-medium text-amber-200 whitespace-nowrap">
+                    Sample data
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] font-medium">
+                <span className="inline-flex items-center gap-1.5 text-zinc-300">
+                  <Clock className="h-4 w-4 text-[#E0A458] shrink-0" />
+                  <span>
+                    Deadline {session.deadline.confirmedDate} · {daysLeftDisplay}
+                  </span>
+                </span>
+
+                <span
+                  className={`font-semibold ${
+                    totalUnresolved > 0 ? 'text-amber-300' : 'text-emerald-300'
+                  }`}
+                >
+                  {overallStatusText}
+                </span>
+
+                {(session.profile.tenderReference || session.sessionId) && (
+                  <span className="text-[12px] font-normal text-zinc-400 font-mono">
+                    {session.profile.tenderReference || session.sessionId}
+                  </span>
+                )}
+              </div>
             </div>
-            <h2 className="mt-1 text-base sm:text-lg font-semibold truncate">
-              {session.profile.companyName}{' '}
-              <span className="text-xs font-normal text-white/60">
-                · {session.profile.district} · {session.provider.model}
-              </span>
-            </h2>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={onStartNewAnalysis}
+                className="min-h-[44px] px-4 rounded-full border border-white/20 text-[13px] font-medium text-zinc-200 hover:bg-white/10 transition-colors cursor-pointer inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Plus className="h-4 w-4 text-[#E0A458]" />
+                <span className="hidden sm:inline">New check</span>
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close workspace"
+                className="inline-flex h-11 w-11 items-center justify-center rounded-full text-zinc-300 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onStartNewAnalysis}
-              className="h-8 px-3 rounded-full border border-white/20 text-xs text-white/85 hover:bg-white/10 transition-colors cursor-pointer inline-flex items-center gap-1.5"
-            >
-              <PlusCircle className="h-3.5 w-3.5 text-[#E0A458]" />
-              <span>New Packet</span>
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close Bid Rescue Workspace"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-white/75 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Summary KPI Strip & Tabs */}
-        <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-2.5 border-b border-white/10 bg-[#110e1d]">
-          <div className="flex items-center gap-1 sm:gap-2" role="tablist">
+          {/* Primary Navigation Tabs: 2x2 grid on narrow mobile, single row on >=640px, never truncated */}
+          <nav
+            className="mt-4 grid grid-cols-2 sm:inline-flex gap-2 w-full sm:w-auto"
+            role="tablist"
+            aria-label="Workspace views"
+          >
             {(
               [
-                { id: 'Chat', label: 'Rescue Chat', icon: MessageSquare },
-                {
-                  id: 'Findings',
-                  label: `Findings (${passedCount}/${session.requirements.length})`,
-                  icon: FileCheck2,
-                },
-                {
-                  id: 'Rescue',
-                  label: `Rescue Plan (${session.plan.length})`,
-                  icon: Wrench,
-                },
-                { id: 'Report', label: 'Report & Audit', icon: History },
+                { id: 'Findings', label: 'Findings', Icon: FileCheck2 },
+                { id: 'Rescue', label: 'Rescue', Icon: Wrench },
+                { id: 'Chat', label: 'Chat', Icon: MessageSquare },
+                { id: 'Report', label: 'Report', Icon: FileText },
               ] as const
-            ).map((tab) => {
-              const Icon = tab.icon;
-              const isSelected = activeTab === tab.id;
+            ).map(({ id, label, Icon }) => {
+              const isSelected = activeTab === id;
               return (
                 <button
-                  key={tab.id}
+                  key={id}
                   type="button"
                   role="tab"
                   aria-selected={isSelected}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`h-8 px-3 rounded-full text-xs font-medium transition-colors cursor-pointer inline-flex items-center gap-1.5 ${
+                  onClick={() => setActiveTab(id)}
+                  className={`min-h-[44px] px-4 rounded-xl text-[13px] font-medium transition-colors cursor-pointer inline-flex items-center justify-center gap-2 whitespace-nowrap border ${
                     isSelected
-                      ? 'bg-[#E0A458] text-[#1A1206] font-semibold'
-                      : 'text-white/75 hover:bg-white/10 hover:text-white'
+                      ? 'bg-white/14 border-white/25 text-white font-semibold'
+                      : 'bg-white/[0.03] border-white/10 text-zinc-300 hover:bg-white/8 hover:text-white'
                   }`}
                 >
-                  <Icon className="h-3.5 w-3.5" />
-                  <span>{tab.label}</span>
+                  <Icon className="h-4 w-4 text-[#E0A458] shrink-0" />
+                  <span>{label}</span>
                 </button>
               );
             })}
-          </div>
+          </nav>
+        </header>
 
-          <div className="flex items-center gap-2 text-[11px]">
-            <span className="px-2 py-0.5 rounded bg-emerald-950/70 border border-emerald-400/35 text-emerald-200 font-mono">
-              PASS: {passedCount}
-            </span>
-            <span className="px-2 py-0.5 rounded bg-red-950/70 border border-red-400/35 text-red-200 font-mono">
-              BLOCKERS: {blockersCount}
-            </span>
-            {reviewCount > 0 && (
-              <span className="px-2 py-0.5 rounded bg-amber-950/70 border border-amber-400/35 text-amber-200 font-mono">
-                REVIEW: {reviewCount}
-              </span>
-            )}
-          </div>
-        </div>
+        {/* Main Scrollable Content Area (centered max-w-960px, strict 8/16/24 rhythm) */}
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 sm:p-6">
+          {/* FINDINGS VIEW */}
+          {activeTab === 'Findings' && (
+            <div className="space-y-4">
+              {decisionFeedbackMsg && (
+                <div
+                  role="status"
+                  className="rounded-xl bg-amber-950/50 border border-amber-400/40 p-4 text-[15px] text-amber-100"
+                >
+                  {decisionFeedbackMsg}
+                </div>
+              )}
 
-        {/* Warning Strip if warnings exist */}
-        {session.warnings.length > 0 && (
-          <div className="px-4 sm:px-6 py-2 bg-amber-950/35 border-b border-amber-400/25 text-[11px] text-amber-100 flex items-center gap-2 overflow-x-auto">
-            <AlertTriangle className="h-3.5 w-3.5 text-[#E0A458] shrink-0" />
-            <span className="truncate">{session.warnings[0]}</span>
-            {session.warnings.length > 1 && (
-              <button
-                type="button"
-                onClick={() => setActiveTab('Report')}
-                className="shrink-0 underline text-[#E0A458] cursor-pointer"
-              >
-                +{session.warnings.length - 1} more
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* Main Content Body */}
-        <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6">
-          {activeTab === 'Chat' && (
-            <div className="flex flex-col h-full min-h-[420px]">
-              {/* Conversation Stream */}
-              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-                {session.chatHistory.map((turn) => (
-                  <div
-                    key={turn.id}
-                    className={`rounded-xl p-3.5 text-xs sm:text-sm leading-relaxed border ${
-                      turn.role === 'user'
-                        ? 'ml-auto max-w-[85%] bg-[#E0A458]/16 border-[#E0A458]/35 text-white'
-                        : 'mr-auto max-w-[92%] bg-white/5 border-white/12 text-white/90'
-                    }`}
-                  >
-                    {turn.role === 'assistant' &&
-                      turn.progressSteps &&
-                      turn.progressSteps.length > 0 && (
-                        <div className="mb-2 flex flex-wrap gap-1.5">
-                          {turn.progressSteps.map((step, i) => (
-                            <span
-                              key={i}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white/7 border border-white/12 text-[10px] text-white/70"
-                            >
-                              <CheckCircle2 className="h-2.5 w-2.5 text-[#E0A458]" />
-                              {step}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-
-                    <div className="whitespace-pre-line">{turn.text}</div>
-
-                    {turn.role === 'assistant' &&
-                      turn.citedRequirements &&
-                      turn.citedRequirements.length > 0 && (
-                        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                          <span className="text-[10px] uppercase tracking-wider text-white/50">
-                            Cited:
-                          </span>
-                          {turn.citedRequirements.map((reqId) => (
-                            <button
-                              key={reqId}
-                              type="button"
-                              onClick={() => setActiveTab('Findings')}
-                              className="px-2 py-0.5 rounded bg-[#E0A458]/15 border border-[#E0A458]/35 text-[10px] font-mono text-[#E0A458] hover:bg-[#E0A458]/25 cursor-pointer"
-                            >
-                              {reqId}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                  </div>
-                ))}
-                <div ref={chatEndRef} />
-              </div>
-
-              {/* Quick Prompts */}
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {QUICK_PROMPTS[language].map((prompt) => (
+              {/* Desktop / Tablet Top Action Header (only one primary button in view) */}
+              <div className="hidden sm:flex items-center justify-between gap-4 pb-2">
+                <p className="text-[13px] font-medium text-zinc-400">
+                  Select any item to view document proof or record a review note.
+                </p>
+                {totalUnresolved > 0 ? (
                   <button
-                    key={prompt}
                     type="button"
-                    disabled={sendingChat}
-                    onClick={() => handleSendChat(prompt)}
-                    className="px-2.5 py-1 rounded-full bg-white/6 border border-white/14 text-[11px] text-white/85 hover:bg-white/12 hover:border-[#E0A458]/50 transition-colors cursor-pointer disabled:opacity-50"
+                    onClick={() => setActiveTab('Rescue')}
+                    className="min-h-[44px] px-6 rounded-full bg-[#E0A458] hover:bg-[#EBB46B] text-[#1A1206] text-[15px] font-semibold transition-colors cursor-pointer shrink-0"
                   >
-                    {prompt}
+                    Open Rescue Plan
                   </button>
-                ))}
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('Report')}
+                    className="min-h-[44px] px-6 rounded-full bg-[#E0A458] hover:bg-[#EBB46B] text-[#1A1206] text-[15px] font-semibold transition-colors cursor-pointer shrink-0"
+                  >
+                    View Report
+                  </button>
+                )}
               </div>
 
-              {/* Inline Corrected Evidence Recheck Bar */}
-              <div className="mt-3 rounded-xl bg-white/4 border border-white/12 p-3 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <FileUp className="h-4 w-4 text-[#E0A458]" />
-                  <span className="font-medium text-white/90">Recheck Corrected PDF:</span>
+              {session.requirements.map((req) => {
+                const finding = session.validation.find((v) => v.requirementId === req.id);
+                const match = session.matches.find((m) => m.requirementId === req.id);
+                const rawStatus = finding?.status ?? 'REVIEW_REQUIRED';
+                const cat = getDisplayCategory(rawStatus);
+                const chip = CHIP_META[cat];
+                const ChipIcon = chip.Icon;
+                const isExpanded = Boolean(expandedReqIds[req.id]);
+                const busy = decisionBusyReq === req.id;
+                const rescueForReq = session.plan.find((p) => p.requirementId === req.id);
+                const reasonLine =
+                  language === 'Tam' && finding?.explanationTa
+                    ? firstSentence(finding.explanationTa)
+                    : firstSentence(finding?.explanation);
+
+                return (
+                  <article
+                    key={req.id}
+                    className="rounded-2xl bg-white/[0.04] border border-white/10 overflow-hidden"
+                  >
+                    {/* Accordion Summary Row */}
+                    <button
+                      type="button"
+                      onClick={() => toggleExpandReq(req.id)}
+                      aria-expanded={isExpanded}
+                      className="w-full min-h-[44px] p-4 sm:p-6 text-left flex items-start justify-between gap-4 hover:bg-white/[0.03] transition-colors cursor-pointer"
+                    >
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[12px] font-medium whitespace-nowrap ${chip.classes}`}
+                          >
+                            <ChipIcon className="h-3.5 w-3.5 shrink-0" />
+                            <span>{chip.label}</span>
+                          </span>
+                          <span className="text-[12px] text-zinc-400">
+                            p.{req.sourcePage} · {req.id}
+                          </span>
+                        </div>
+
+                        <h3 className="text-[15px] font-medium text-white leading-[1.5]">
+                          {shortRequirementLabel(req.officialWording)}
+                        </h3>
+
+                        <p className="text-[15px] text-zinc-300 leading-[1.5]">{reasonLine}</p>
+                      </div>
+
+                      <ChevronDown
+                        className={`h-5 w-5 text-zinc-400 shrink-0 mt-1 transition-transform ${
+                          isExpanded ? 'rotate-180' : ''
+                        }`}
+                      />
+                    </button>
+
+                    {/* Expanded Details: Supplier Evidence & Recommended Action */}
+                    {isExpanded && (
+                      <div className="px-4 pb-4 sm:px-6 sm:pb-6 pt-4 border-t border-white/10 space-y-4 bg-black/20">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="rounded-xl bg-white/[0.03] border border-white/8 p-4 space-y-2">
+                            <p className="text-[13px] font-medium text-zinc-400">
+                              Supplier evidence
+                            </p>
+                            {match && match.docId ? (
+                              <p className="text-[15px] text-zinc-200 leading-[1.5]">
+                                <span className="font-medium text-white">
+                                  {match.docName} (p.{match.page})
+                                </span>{' '}
+                                — “{match.verbatimQuote}”
+                              </p>
+                            ) : (
+                              <p className="text-[15px] text-zinc-400 leading-[1.5]">
+                                No matching supplier document found.
+                              </p>
+                            )}
+                          </div>
+
+                          <div className="rounded-xl bg-white/[0.03] border border-white/8 p-4 space-y-2">
+                            <p className="text-[13px] font-medium text-zinc-400">
+                              Recommended action
+                            </p>
+                            <p className="text-[15px] text-zinc-200 leading-[1.5]">
+                              {rescueForReq
+                                ? language === 'Tam'
+                                  ? rescueForReq.whatToFixTa
+                                  : rescueForReq.whatToFix
+                                : cat === 'PASS'
+                                  ? 'No action needed. Verified against tender requirement.'
+                                  : `Upload valid proof for: ${req.requiredEvidence}.`}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl bg-white/[0.02] border border-white/8 p-4 space-y-1">
+                          <p className="text-[13px] font-medium text-zinc-400">
+                            Tender source ({req.sourceDocName}, p.{req.sourcePage})
+                          </p>
+                          <p className="text-[14px] text-zinc-300 leading-[1.5]">
+                            “{req.verbatimQuote}”
+                          </p>
+                        </div>
+
+                        {/* Secondary Outlined Review Controls (never primary filled here) */}
+                        <div className="pt-2 flex flex-wrap items-center gap-2">
+                          <input
+                            type="text"
+                            value={decisionNoteByReq[req.id] || ''}
+                            onChange={(e) =>
+                              setDecisionNoteByReq((prev) => ({
+                                ...prev,
+                                [req.id]: e.target.value,
+                              }))
+                            }
+                            placeholder="Add review note..."
+                            className="flex-1 min-w-[200px] min-h-[44px] rounded-xl bg-white/[0.06] border border-white/14 px-4 text-[15px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#E0A458]"
+                          />
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => handleDecision(req.id, 'agree')}
+                            className="min-h-[44px] px-4 rounded-full border border-white/20 text-[13px] font-medium text-zinc-200 hover:bg-white/10 cursor-pointer disabled:opacity-50"
+                          >
+                            Agree
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => handleDecision(req.id, 'dispute')}
+                            className="min-h-[44px] px-4 rounded-full border border-white/20 text-[13px] font-medium text-zinc-200 hover:bg-white/10 cursor-pointer disabled:opacity-50"
+                          >
+                            Dispute
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => handleDecision(req.id, 'approve')}
+                            className="min-h-[44px] px-4 rounded-full border border-white/20 text-[13px] font-medium text-zinc-200 hover:bg-white/10 cursor-pointer disabled:opacity-50"
+                          >
+                            Approve
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+
+          {/* RESCUE VIEW */}
+          {activeTab === 'Rescue' && (
+            <div className="space-y-4">
+              {/* Upload Corrected PDF Bar (Single Primary CTA on Rescue view) */}
+              <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-4 sm:p-6 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <h3 className="text-[16px] font-bold text-white">Fix blockers before deadline</h3>
+                    <p className="text-[13px] text-zinc-400">
+                      Upload a corrected PDF to recheck and update affected findings.
+                    </p>
+                  </div>
+
+                  <div className="hidden sm:flex items-center gap-3">
+                    {session.mode === 'SAMPLE' && (
+                      <a
+                        href="/api/sample/corrected-iso.pdf"
+                        download="Sample_Renewed_ISO_9001.pdf"
+                        className="min-h-[44px] px-3 inline-flex items-center text-[13px] font-medium text-[#E0A458] underline hover:text-[#EBB46B]"
+                      >
+                        Sample ISO PDF
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      disabled={uploadingCorrection}
+                      onClick={triggerCorrectedUploadPicker}
+                      className="min-h-[44px] px-6 rounded-full bg-[#E0A458] hover:bg-[#EBB46B] disabled:opacity-60 text-[#1A1206] text-[15px] font-semibold inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      {uploadingCorrection ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <FileUp className="h-4 w-4" />
+                      )}
+                      <span>{uploadingCorrection ? 'Rechecking...' : 'Upload corrected PDF'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <label htmlFor="tk-rescue-target" className="text-[13px] font-medium text-zinc-400">
+                    Target item:
+                  </label>
                   <select
-                    aria-label="Target requirement for corrected PDF"
+                    id="tk-rescue-target"
                     value={correctionTargetReq}
                     onChange={(e) => setCorrectionTargetReq(e.target.value)}
-                    className="h-7 rounded-lg bg-[#18151f] border border-white/15 px-2 text-[11px] text-white"
+                    className="min-h-[44px] rounded-xl bg-[#18151f] border border-white/15 px-3 text-[13px] text-white focus:outline-none focus:border-[#E0A458]"
                   >
                     <option value="">Auto-detect by PDF content</option>
                     {session.requirements.map((r) => (
@@ -593,64 +869,168 @@ export function BidWorkspacePanel({
                       </option>
                     ))}
                   </select>
-                  <label className="h-7 px-3 rounded-full bg-white/10 hover:bg-white/18 text-[11px] font-medium text-white inline-flex items-center gap-1.5 cursor-pointer">
-                    {uploadingCorrection ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <FileUp className="h-3 w-3 text-[#E0A458]" />
-                    )}
-                    <span>{uploadingCorrection ? 'Rechecking...' : 'Upload Corrected PDF'}</span>
-                    <input
-                      ref={correctionFileRef}
-                      type="file"
-                      accept=".pdf,application/pdf"
-                      className="sr-only"
-                      disabled={uploadingCorrection}
-                      onChange={(e) => handleCorrectedUpload(e.target.files?.[0])}
-                    />
-                  </label>
+
+                  {session.mode === 'SAMPLE' && (
+                    <a
+                      href="/api/sample/corrected-iso.pdf"
+                      download="Sample_Renewed_ISO_9001.pdf"
+                      className="sm:hidden min-h-[44px] inline-flex items-center text-[13px] font-medium text-[#E0A458] underline"
+                    >
+                      Download sample renewed ISO PDF
+                    </a>
+                  )}
                 </div>
 
-                {session.mode === 'SAMPLE' && (
-                  <a
-                    href="/api/sample/corrected-iso.pdf"
-                    download="Sample_Renewed_ISO_9001.pdf"
-                    className="text-[11px] text-[#E0A458] underline hover:text-[#EBB46B]"
-                  >
-                    Download Sample Renewed ISO PDF
-                  </a>
-                )}
-
                 {correctionStatus && (
-                  <p className="w-full text-[11px] text-emerald-200">{correctionStatus}</p>
+                  <p role="status" className="text-[14px] text-emerald-300">
+                    {correctionStatus}
+                  </p>
                 )}
               </div>
 
-              {/* Chat Errors / Voice Note */}
+              {session.plan.length === 0 ? (
+                <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-4 sm:p-6 text-[15px] text-emerald-200">
+                  All blockers are cleared. Review your report before portal submission.
+                </div>
+              ) : (
+                session.plan.map((item) => {
+                  const fixText = language === 'Tam' ? item.whatToFixTa : item.whatToFix;
+                  const timeLeftClean = item.timeRemaining.replace(/\s*remaining$/i, ' left');
+                  const leadTimeLabel =
+                    item.feasibility === 'unknown' ? 'Time unknown' : 'Can prepare now';
+
+                  return (
+                    <article
+                      key={item.requirementId}
+                      className="rounded-2xl bg-white/[0.04] border border-white/10 p-4 sm:p-6 space-y-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/10 text-[13px] font-bold text-white">
+                            {item.priority}
+                          </span>
+                          <span className="text-[12px] font-mono text-zinc-400">
+                            {item.requirementId}
+                          </span>
+                        </div>
+                        <span className="text-[13px] font-medium text-zinc-300">
+                          {timeLeftClean} · {leadTimeLabel}
+                        </span>
+                      </div>
+
+                      <h3 className="text-[15px] font-medium text-white leading-[1.5]">
+                        {fixText}
+                      </h3>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-[13px]">
+                        <p className="text-zinc-400">
+                          <span className="font-medium text-zinc-300">Owner:</span>{' '}
+                          {item.suggestedOwner}
+                        </p>
+                        <p className="text-zinc-400">
+                          <span className="font-medium text-zinc-300">Evidence needed:</span>{' '}
+                          {item.requiredEvidence}
+                        </p>
+                      </div>
+                    </article>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {/* CHAT VIEW */}
+          {activeTab === 'Chat' && (
+            <div className="flex flex-col h-full min-h-[420px] space-y-4">
+              <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+                {session.chatHistory.map((turn) => (
+                  <div
+                    key={turn.id}
+                    className={`rounded-2xl p-4 sm:p-6 text-[15px] leading-[1.5] border ${
+                      turn.role === 'user'
+                        ? 'ml-auto max-w-[85%] bg-[#E0A458]/14 border-[#E0A458]/35 text-white'
+                        : 'mr-auto max-w-[92%] bg-white/[0.04] border-white/10 text-zinc-100'
+                    }`}
+                  >
+                    <div className="whitespace-pre-line">{turn.text}</div>
+
+                    {turn.role === 'assistant' && (
+                      <div className="mt-4 pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {turn.citedRequirements &&
+                            turn.citedRequirements.map((reqId) => (
+                              <button
+                                key={reqId}
+                                type="button"
+                                onClick={() => setActiveTab('Findings')}
+                                className="min-h-[36px] px-3 rounded-full border border-white/15 text-[12px] font-mono text-zinc-300 hover:bg-white/10 cursor-pointer"
+                              >
+                                {reqId}
+                              </button>
+                            ))}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => void handleSpeakTurn(turn.id, turn.text)}
+                          aria-label={speakingTurnId === turn.id ? 'Stop voice' : 'Listen to reply'}
+                          className="min-h-[44px] px-3 rounded-full border border-white/15 inline-flex items-center gap-1.5 text-[13px] font-medium text-zinc-200 hover:bg-white/10 cursor-pointer"
+                        >
+                          <Volume2 className="h-4 w-4 text-[#E0A458]" />
+                          <span>
+                            {speakingTurnId === turn.id
+                              ? 'Stop'
+                              : language === 'Tam'
+                                ? 'கேள்'
+                                : 'Listen'}
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <div ref={chatEndRef} />
+              </div>
+
+              {/* Quick Prompts */}
+              <div className="flex flex-wrap gap-2">
+                {QUICK_PROMPTS[language].map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    disabled={sendingChat}
+                    onClick={() => handleSendChat(prompt)}
+                    className="min-h-[44px] px-4 rounded-full border border-white/15 bg-white/[0.03] text-[13px] font-medium text-zinc-200 hover:bg-white/10 transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+
               {chatError && (
-                <p className="mt-2 text-xs text-red-300" role="alert">
+                <p className="text-[14px] text-red-300" role="alert">
                   {chatError}
                 </p>
               )}
-              {voiceNote && <p className="mt-1.5 text-[11px] text-amber-200/90">{voiceNote}</p>}
+              {voiceNote && <p className="text-[13px] text-zinc-400">{voiceNote}</p>}
 
-              {/* Composer */}
+              {/* Composer (Single Primary Button: Send) */}
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
                   handleSendChat();
                 }}
-                className="mt-2.5 flex items-center gap-2"
+                className="flex items-center gap-2 pt-1"
               >
                 <button
                   type="button"
                   onClick={toggleVoiceInput}
-                  title="Dictate Tamil or English question into editable input"
-                  aria-label={listening ? 'Stop voice dictation' : 'Start voice dictation'}
-                  className={`h-10 w-10 shrink-0 rounded-full border inline-flex items-center justify-center transition-colors cursor-pointer ${
+                  title="Voice question"
+                  aria-label={listening ? 'Stop voice input' : 'Start voice input'}
+                  className={`h-11 w-11 shrink-0 rounded-full border inline-flex items-center justify-center transition-colors cursor-pointer ${
                     listening
                       ? 'bg-red-600/80 border-red-300 text-white'
-                      : 'bg-white/6 border-white/15 text-white/80 hover:bg-white/12'
+                      : 'bg-white/[0.04] border-white/15 text-zinc-200 hover:bg-white/10'
                   }`}
                 >
                   {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
@@ -661,20 +1041,20 @@ export function BidWorkspacePanel({
                   onChange={(e) => setMessageInput(e.target.value)}
                   placeholder={
                     language === 'Tam'
-                      ? 'தமிழ் அல்லது ஆங்கிலத்தில் கேளுங்கள் (எ.கா. முதலில் எதை சரிசெய்ய வேண்டும்?)...'
-                      : 'Ask: "Can we still bid?", "What should I fix first?", "Explain R2", or "I disagree with R2"...'
+                      ? 'தமிழ் அல்லது ஆங்கிலத்தில் கேளுங்கள்...'
+                      : 'Ask a question about your bid...'
                   }
-                  className="flex-1 h-10 rounded-full bg-white/7 border border-white/16 px-4 text-xs sm:text-sm text-white placeholder:text-white/40 focus:outline-none focus:border-[#E0A458]"
+                  className="flex-1 min-w-0 min-h-[44px] rounded-full bg-white/[0.06] border border-white/15 px-4 text-[15px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#E0A458]"
                 />
                 <button
                   type="submit"
                   disabled={sendingChat || !messageInput.trim()}
-                  className="h-10 px-4 rounded-full bg-[#E0A458] hover:bg-[#EBB46B] disabled:opacity-50 text-[#1A1206] text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                  className="min-h-[44px] px-5 rounded-full bg-[#E0A458] hover:bg-[#EBB46B] disabled:opacity-50 text-[#1A1206] text-[15px] font-semibold inline-flex items-center gap-2 cursor-pointer shrink-0"
                 >
                   {sendingChat ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <Send className="h-3.5 w-3.5" />
+                    <Send className="h-4 w-4" />
                   )}
                   <span>Send</span>
                 </button>
@@ -682,274 +1062,108 @@ export function BidWorkspacePanel({
             </div>
           )}
 
-          {activeTab === 'Findings' && (
-            <div className="space-y-4">
-              {decisionFeedbackMsg && (
-                <div className="rounded-xl bg-[#E0A458]/12 border border-[#E0A458]/35 px-4 py-2.5 text-xs text-amber-100">
-                  {decisionFeedbackMsg}
-                </div>
-              )}
-
-              {session.requirements.map((req) => {
-                const finding = session.validation.find((v) => v.requirementId === req.id);
-                const match = session.matches.find((m) => m.requirementId === req.id);
-                const status = finding?.status ?? 'REVIEW_REQUIRED';
-                const busy = decisionBusyReq === req.id;
-
-                return (
-                  <div
-                    key={req.id}
-                    className="rounded-xl bg-white/5 border border-white/12 p-4 space-y-3"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-mono text-xs font-bold text-[#E0A458]">{req.id}</span>
-                          <span
-                            className={`px-2 py-0.5 rounded border text-[11px] font-mono font-semibold ${STATUS_STYLE[status]}`}
-                          >
-                            {status}
-                          </span>
-                          <span className="text-[11px] uppercase tracking-wider text-white/50">
-                            {req.requirementType} · {req.sourceDocName} p.{req.sourcePage}
-                          </span>
-                          {!req.citationVerified && (
-                            <span className="text-[10px] px-2 py-0.5 rounded bg-amber-950/70 border border-amber-400/40 text-amber-200">
-                              Citation Unverified
-                            </span>
-                          )}
-                        </div>
-                        <h3 className="mt-1.5 text-sm font-semibold text-white">
-                          {req.officialWording}
-                        </h3>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                      <div className="rounded-lg bg-black/30 border border-white/8 p-3">
-                        <p className="text-[10px] uppercase tracking-wider text-white/50">
-                          Tender Quote
-                        </p>
-                        <p className="mt-1 text-white/85">"{req.verbatimQuote}"</p>
-                      </div>
-                      <div className="rounded-lg bg-black/30 border border-white/8 p-3">
-                        <p className="text-[10px] uppercase tracking-wider text-white/50">
-                          Supplier Evidence Match
-                        </p>
-                        {match && match.docId ? (
-                          <p className="mt-1 text-white/85">
-                            <span className="font-medium text-[#E0A458]">
-                              {match.docName} (p.{match.page})
-                            </span>
-                            : "{match.verbatimQuote}"
-                          </p>
-                        ) : (
-                          <p className="mt-1 text-white/55">
-                            No verified matching supplier document passage.
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <p className="text-xs leading-relaxed text-white/85">
-                      {language === 'Tam' && finding?.explanationTa
-                        ? finding.explanationTa
-                        : finding?.explanation}
-                    </p>
-
-                    {finding && finding.sentinelFlags.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {finding.sentinelFlags.map((flag, idx) => (
-                          <span
-                            key={idx}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-950/60 border border-amber-400/35 text-[11px] text-amber-200"
-                          >
-                            <ShieldAlert className="h-3 w-3" />
-                            {flag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Human Review / Dispute Controls */}
-                    <div className="pt-2 border-t border-white/10 flex flex-wrap items-center gap-2">
-                      <input
-                        type="text"
-                        value={decisionNoteByReq[req.id] || ''}
-                        onChange={(e) =>
-                          setDecisionNoteByReq((prev) => ({ ...prev, [req.id]: e.target.value }))
-                        }
-                        placeholder="Add review note or dispute reason..."
-                        className="flex-1 min-w-[180px] h-8 rounded-lg bg-white/6 border border-white/14 px-2.5 text-xs text-white placeholder:text-white/40"
-                      />
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => handleDecision(req.id, 'agree')}
-                        className="h-8 px-3 rounded-full bg-white/8 hover:bg-white/15 text-[11px] text-white cursor-pointer disabled:opacity-50"
-                      >
-                        Agree Finding
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => handleDecision(req.id, 'dispute')}
-                        className="h-8 px-3 rounded-full bg-amber-950/60 border border-amber-400/35 hover:bg-amber-900/60 text-[11px] text-amber-100 cursor-pointer disabled:opacity-50"
-                      >
-                        Dispute
-                      </button>
-                      {status === 'REVIEW_REQUIRED' && (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => handleDecision(req.id, 'approve')}
-                          className="h-8 px-3 rounded-full bg-emerald-950/70 border border-emerald-400/40 hover:bg-emerald-900/70 text-[11px] text-emerald-100 cursor-pointer disabled:opacity-50"
-                        >
-                          Approve After Human Review
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {activeTab === 'Rescue' && (
-            <div className="space-y-3">
-              {session.plan.length === 0 ? (
-                <div className="rounded-xl bg-emerald-950/35 border border-emerald-400/35 p-5 text-sm text-emerald-100">
-                  No unresolved blockers remain in the Bid Rescue queue. Review the Readiness Report before final submission.
-                </div>
-              ) : (
-                session.plan.map((item) => (
-                  <div
-                    key={item.requirementId}
-                    className="rounded-xl bg-white/5 border border-white/12 p-4 space-y-2"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="h-6 w-6 rounded-full bg-[#E0A458] text-[#1A1206] text-xs font-bold inline-flex items-center justify-center">
-                          {item.priority}
-                        </span>
-                        <span className="font-mono text-xs text-[#E0A458]">{item.requirementId}</span>
-                        <span
-                          className={`px-2 py-0.5 rounded border text-[10px] font-mono ${URGENCY_STYLE[item.urgency]}`}
-                        >
-                          {item.urgency}
-                        </span>
-                      </div>
-                      <span className="text-[11px] text-white/65">
-                        Owner: <strong className="text-white">{item.suggestedOwner}</strong> ·{' '}
-                        {item.timeRemaining}
-                      </span>
-                    </div>
-
-                    <h3 className="text-sm font-semibold text-white">
-                      {language === 'Tam' ? item.whatToFixTa : item.whatToFix}
-                    </h3>
-                    <p className="text-xs text-white/80">{item.whyItMatters}</p>
-                    <div className="flex flex-wrap gap-3 pt-1 text-[11px] text-white/65">
-                      <span>Required: {item.requiredEvidence}</span>
-                      <span>
-                        Feasibility: <strong className="text-white/90">{item.feasibility}</strong>
-                      </span>
-                      <span>{item.leadTimeNote}</span>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-
+          {/* REPORT VIEW */}
           {activeTab === 'Report' && (
             <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white/5 border border-white/12 p-4">
-                <div>
-                  <h3 className="text-sm font-semibold">HTML Bid Readiness Dossier</h3>
-                  <p className="text-xs text-white/70 mt-0.5">
-                    Includes all requirements, quotes, Sentinel flags, human disputes, audit events, and unresolved blockers.
+              {/* Shortened Report Card: Title, One Line, One Primary Button, One Secondary Button */}
+              <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-4 sm:p-6 flex flex-wrap items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <h3 className="text-[16px] font-bold text-white">Bid Readiness Report</h3>
+                  <p className="text-[15px] text-zinc-300">
+                    Includes all requirements, sources, and unresolved items.
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <MonochromeSealStamp className="hidden sm:block h-11 w-11 shrink-0 rounded-full" />
                   <button
                     type="button"
-                    onClick={() => void downloadReport(session.sessionId).catch((error: Error) => window.alert(error.message))}
-                    className="h-9 px-4 rounded-full bg-[#E0A458] hover:bg-[#EBB46B] text-[#1A1206] text-xs font-semibold inline-flex items-center gap-1.5"
+                    onClick={handleDownloadReport}
+                    className="min-h-[44px] px-6 rounded-full bg-[#E0A458] hover:bg-[#EBB46B] text-[#1A1206] text-[15px] font-semibold inline-flex items-center gap-2 cursor-pointer"
                   >
-                    <Download className="h-3.5 w-3.5" />
-                    <span>Download HTML Report</span>
+                    <Download className="h-4 w-4" />
+                    <span>Download report</span>
                   </button>
                   <button
                     type="button"
                     onClick={onClearSession}
-                    className="h-9 px-3.5 rounded-full border border-white/20 text-xs text-white/80 hover:bg-white/10 cursor-pointer"
+                    className="min-h-[44px] px-5 rounded-full border border-white/20 text-[13px] font-medium text-zinc-200 hover:bg-white/10 cursor-pointer"
                   >
-                    Clear Session
+                    Clear session
                   </button>
                 </div>
               </div>
 
-              {/* External Integration Boundaries (honest status) */}
-              {integrations && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                  <div className="rounded-xl bg-white/4 border border-white/10 p-3.5">
-                    <p className="font-semibold text-white/90">
-                      Sarvam AI Voice:{' '}
-                      <span className="text-amber-300">
-                        {integrations.sarvamVoice.connected ? 'Connected' : 'Not Connected'}
-                      </span>
-                    </p>
-                    <p className="mt-1 text-white/70">{integrations.sarvamVoice.note}</p>
-                  </div>
-                  <div className="rounded-xl bg-white/4 border border-white/10 p-3.5">
-                    <p className="font-semibold text-white/90">
-                      n8n Automation:{' '}
-                      <span className="text-amber-300">
-                        {integrations.n8nAutomation.connected ? 'Connected' : 'Not Connected'}
-                      </span>
-                    </p>
-                    <p className="mt-1 text-white/70">{integrations.n8nAutomation.note}</p>
-                  </div>
+              {reportError && (
+                <div
+                  className="rounded-xl bg-red-950/50 border border-red-400/35 p-4 text-[14px] text-red-200"
+                  role="alert"
+                >
+                  {reportError}
                 </div>
               )}
 
-              {/* Warnings + Audit Trail */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                <div className="rounded-xl bg-white/4 border border-white/10 p-3.5 space-y-1.5">
-                  <p className="font-semibold text-[#E0A458]">
-                    Warnings &amp; Coverage ({session.warnings.length})
+              {/* Shortened Voice Status Card: One line only */}
+              {integrations && (
+                <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-4 sm:p-6">
+                  <p className="text-[15px] font-medium text-white">
+                    {integrations.sarvamVoice.connected
+                      ? 'Voice: connected'
+                      : 'Voice: not set up'}
                   </p>
-                  {session.warnings.length === 0 ? (
-                    <p className="text-white/60">No ingestion or coverage warnings.</p>
-                  ) : (
-                    <ul className="list-disc pl-4 space-y-1 text-white/80">
-                      {session.warnings.map((w, i) => (
-                        <li key={i}>{w}</li>
-                      ))}
-                    </ul>
-                  )}
                 </div>
+              )}
 
-                <div className="rounded-xl bg-white/4 border border-white/10 p-3.5 space-y-1.5 max-h-52 overflow-y-auto">
-                  <p className="font-semibold text-[#E0A458]">
-                    Audit Trail ({session.audit_events.length})
-                  </p>
-                  {session.audit_events.map((ev) => (
-                    <div key={ev.id} className="text-[11px] text-white/80 border-b border-white/8 pb-1">
-                      <span className="font-mono text-white/55">[{ev.actor}]</span>{' '}
-                      <strong>{ev.action}</strong>: {ev.detail}
-                    </div>
-                  ))}
+              {/* Optional n8n Reminder Card when connected */}
+              {integrations?.n8nAutomation.connected && (
+                <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-4 sm:p-6 space-y-4">
+                  <p className="text-[15px] font-medium text-white">Compliance reminder</p>
+                  <input
+                    type="email"
+                    value={n8nEmail}
+                    onChange={(e) => setN8nEmail(e.target.value)}
+                    placeholder="Recipient email (optional)"
+                    className="w-full min-h-[44px] rounded-xl bg-white/[0.06] border border-white/15 px-4 text-[15px] text-white placeholder:text-zinc-500"
+                  />
+                  <label className="flex items-center gap-3 text-[13px] text-zinc-300 cursor-pointer min-h-[44px]">
+                    <input
+                      type="checkbox"
+                      checked={n8nAuthorized}
+                      onChange={(e) => setN8nAuthorized(e.target.checked)}
+                      className="h-4 w-4"
+                    />
+                    <span>Send this reminder summary via n8n.</span>
+                  </label>
+                  <button
+                    type="button"
+                    disabled={!n8nAuthorized || dispatchingN8n}
+                    onClick={handleDispatchN8n}
+                    className="min-h-[44px] px-5 rounded-full border border-white/25 text-[13px] font-medium text-white hover:bg-white/10 disabled:opacity-50 cursor-pointer"
+                  >
+                    {dispatchingN8n ? 'Sending...' : 'Send reminder'}
+                  </button>
+                  {n8nStatusMsg && <p className="text-[13px] text-amber-200">{n8nStatusMsg}</p>}
                 </div>
-              </div>
+              )}
+
+              {/* Warnings (excluding duplicate sample note) & Audit */}
+              {nonSampleWarnings.length > 0 && (
+                <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-4 sm:p-6 space-y-2">
+                  <h4 className="text-[13px] font-medium text-zinc-400">Coverage notes</h4>
+                  <ul className="list-disc pl-5 space-y-1 text-[14px] text-zinc-300">
+                    {nonSampleWarnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               {/* Sandboxed HTML Report Preview */}
-              <div className="rounded-xl border border-white/12 overflow-hidden bg-white">
+              <div className="rounded-2xl border border-white/12 overflow-hidden bg-white">
                 {reportLoading ? (
-                  <div className="p-6 text-xs text-slate-700 flex items-center gap-2">
+                  <div className="p-6 text-[14px] text-slate-700 flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>Rendering readiness report preview...</span>
+                    <span>Loading report preview...</span>
                   </div>
                 ) : reportHtml ? (
                   <iframe
@@ -960,9 +1174,61 @@ export function BidWorkspacePanel({
                   />
                 ) : null}
               </div>
+
+              {/* Disclaimer ONCE at bottom of Report View */}
+              <p className="pt-2 text-[13px] text-zinc-400 leading-[1.5]">
+                Checks supplied documents for gaps and expiry risks only. Does not guarantee bid
+                acceptance or legal eligibility. Unverified lead times appear as Time unknown.
+              </p>
             </div>
           )}
         </div>
+
+        {/* Sticky Mobile Bottom Action Bar (Main next action only) */}
+        {activeTab !== 'Chat' && (
+          <div className="sm:hidden sticky bottom-0 px-4 py-3 border-t border-white/10 bg-[#151320]">
+            {activeTab === 'Findings' && (
+              <button
+                type="button"
+                onClick={() => setActiveTab(totalUnresolved > 0 ? 'Rescue' : 'Report')}
+                className="w-full min-h-[44px] rounded-full bg-[#E0A458] text-[#1A1206] text-[15px] font-semibold cursor-pointer"
+              >
+                {firstRescueItem
+                  ? `Fix ${firstRescueItem.requirementId} in Rescue`
+                  : totalUnresolved > 0
+                    ? 'Open Rescue Plan'
+                    : 'View Report'}
+              </button>
+            )}
+
+            {activeTab === 'Rescue' && (
+              <button
+                type="button"
+                disabled={uploadingCorrection}
+                onClick={triggerCorrectedUploadPicker}
+                className="w-full min-h-[44px] rounded-full bg-[#E0A458] disabled:opacity-60 text-[#1A1206] text-[15px] font-semibold inline-flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {uploadingCorrection ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <FileUp className="h-4 w-4" />
+                )}
+                <span>{uploadingCorrection ? 'Rechecking...' : 'Upload corrected PDF'}</span>
+              </button>
+            )}
+
+            {activeTab === 'Report' && (
+              <button
+                type="button"
+                onClick={handleDownloadReport}
+                className="w-full min-h-[44px] rounded-full bg-[#E0A458] text-[#1A1206] text-[15px] font-semibold inline-flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Download className="h-4 w-4" />
+                <span>Download report</span>
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

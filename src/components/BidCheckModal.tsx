@@ -22,6 +22,8 @@ interface BidCheckModalProps {
   onSessionCreated: (session: SessionState) => void;
 }
 
+import { isSupabaseConfigured, supabase } from '../lib/supabase';
+
 const TN_DISTRICTS = [
   'Chennai',
   'Coimbatore',
@@ -29,7 +31,7 @@ const TN_DISTRICTS = [
   'Tiruchirappalli',
   'Salem',
   'Tiruppur',
-  'Krishnagiri (Hosur)',
+  'Krishnagiri',
   'Erode',
   'Tirunelveli',
   'Vellore',
@@ -37,7 +39,30 @@ const TN_DISTRICTS = [
   'Thanjavur',
   'Kancheepuram',
   'Chengalpattu',
-  'Other Tamil Nadu District',
+  'Ariyalur',
+  'Cuddalore',
+  'Dharmapuri',
+  'Dindigul',
+  'Kallakurichi',
+  'Kanniyakumari',
+  'Karur',
+  'Mayiladuthurai',
+  'Nagapattinam',
+  'Namakkal',
+  'Nilgiris',
+  'Perambalur',
+  'Pudukkottai',
+  'Ramanathapuram',
+  'Ranipet',
+  'Sivaganga',
+  'Tenkasi',
+  'Theni',
+  'Tirupathur',
+  'Tiruvallur',
+  'Tiruvannamalai',
+  'Tiruvarur',
+  'Viluppuram',
+  'Virudhunagar',
 ];
 
 const SECTORS = [
@@ -181,8 +206,23 @@ export function BidCheckModal({
   const [corrigendumPdf, setCorrigendumPdf] = useState<File | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [needsSignIn, setNeedsSignIn] = useState(false);
 
   const c = COPY[language];
+
+  useEffect(() => {
+    if (!open || !isSupabaseConfigured() || !supabase) {
+      setNeedsSignIn(false);
+      return;
+    }
+    supabase.auth.getSession().then(({ data }) => {
+      setNeedsSignIn(!data.session);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_ev, sess) => {
+      setNeedsSignIn(!sess);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -295,14 +335,14 @@ export function BidCheckModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md overflow-y-auto"
+      className="tk-workspace fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md overflow-y-auto overflow-x-hidden"
       role="dialog"
       aria-modal="true"
       aria-labelledby="bid-modal-title"
       onClick={handleClose}
     >
       <div
-        className="relative w-full max-w-lg my-auto rounded-2xl bg-[#110f18]/96 border border-white/16 p-6 sm:p-7 text-white shadow-2xl"
+        className="relative w-full max-w-xl my-auto rounded-2xl bg-[#111019] border border-white/12 p-4 sm:p-6 text-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -310,21 +350,21 @@ export function BidCheckModal({
           onClick={handleClose}
           disabled={loading}
           aria-label={c.closeAria}
-          className="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-full text-white/75 hover:bg-white/10 hover:text-white transition-colors cursor-pointer disabled:opacity-40"
+          className="absolute right-3 top-3 inline-flex h-11 w-11 items-center justify-center rounded-full text-zinc-400 hover:bg-white/10 hover:text-white transition-colors cursor-pointer disabled:opacity-40"
         >
-          <X className="h-4 w-4" />
+          <X className="h-5 w-5" />
         </button>
 
-        <p className="text-[11px] font-medium tracking-[0.16em] uppercase text-[#E0A458]">
+        <p className="text-[12px] font-medium text-zinc-400">
           {c.eyebrow} · {initialMode}
         </p>
-        <h2 id="bid-modal-title" className="mt-1 text-2xl font-semibold tracking-tight pr-8">
+        <h2 id="bid-modal-title" className="mt-2 text-xl sm:text-2xl font-bold tracking-tight pr-12 text-white">
           {c.title}
         </h2>
-        <p className="mt-1 text-xs leading-relaxed text-white/75">{c.subtitle}</p>
+        <p className="mt-2 text-[15px] leading-[1.5] text-zinc-300">{c.subtitle}</p>
 
-        {/* Distinct Live vs Sample Mode Switcher */}
-        <div className="mt-4 grid grid-cols-2 gap-2 p-1 rounded-xl bg-white/5 border border-white/10">
+        {/* Live vs Sample Switcher */}
+        <div className="mt-6 grid grid-cols-2 gap-2 p-1 rounded-xl bg-white/5 border border-white/10">
           <button
             type="button"
             disabled={loading}
@@ -332,13 +372,13 @@ export function BidCheckModal({
               setIntakeMode('LIVE');
               setError('');
             }}
-            className={`h-9 rounded-lg text-xs font-medium inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+            className={`min-h-[44px] px-3 rounded-lg text-[13px] font-medium inline-flex items-center justify-center gap-2 transition-colors cursor-pointer whitespace-nowrap ${
               intakeMode === 'LIVE'
                 ? 'bg-[#E0A458] text-[#1A1206] font-semibold'
-                : 'text-white/75 hover:bg-white/8'
+                : 'text-zinc-300 hover:bg-white/8'
             }`}
           >
-            <ShieldCheck className="h-3.5 w-3.5" />
+            <ShieldCheck className="h-4 w-4 shrink-0" />
             <span>{c.liveTab}</span>
           </button>
           <button
@@ -348,29 +388,29 @@ export function BidCheckModal({
               setIntakeMode('SAMPLE');
               setError('');
             }}
-            className={`h-9 rounded-lg text-xs font-medium inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+            className={`min-h-[44px] px-3 rounded-lg text-[13px] font-medium inline-flex items-center justify-center gap-2 transition-colors cursor-pointer whitespace-nowrap ${
               intakeMode === 'SAMPLE'
                 ? 'bg-[#E0A458] text-[#1A1206] font-semibold'
-                : 'text-white/75 hover:bg-white/8'
+                : 'text-zinc-300 hover:bg-white/8'
             }`}
           >
-            <FlaskConical className="h-3.5 w-3.5" />
+            <FlaskConical className="h-4 w-4 shrink-0" />
             <span>{c.sampleTab}</span>
           </button>
         </div>
 
         {intakeMode === 'SAMPLE' ? (
-          <div className="mt-4 space-y-4">
-            <div className="rounded-xl bg-amber-950/35 border border-amber-400/35 p-4 space-y-2">
-              <span className="inline-block px-2 py-0.5 rounded bg-amber-950/80 border border-amber-400/50 text-[10px] font-semibold uppercase tracking-wider text-amber-200">
-                {c.sampleBadge}
+          <div className="mt-6 space-y-4">
+            <div className="rounded-xl bg-white/[0.04] border border-white/10 p-4 sm:p-6 space-y-2">
+              <span className="inline-block px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-400/35 text-[12px] font-medium text-amber-200">
+                Sample data
               </span>
-              <p className="text-xs leading-relaxed text-white/85">{c.sampleDesc}</p>
+              <p className="text-[15px] leading-[1.5] text-zinc-200">{c.sampleDesc}</p>
             </div>
 
             {error && (
               <div
-                className="flex items-start gap-2 rounded-xl bg-red-950/60 border border-red-400/35 px-3 py-2 text-xs text-red-200"
+                className="flex items-start gap-2 rounded-xl bg-red-950/60 border border-red-400/35 p-4 text-[14px] text-red-200"
                 role="alert"
               >
                 <AlertCircle className="h-4 w-4 shrink-0 text-red-300 mt-0.5" />
@@ -382,16 +422,22 @@ export function BidCheckModal({
               type="button"
               disabled={loading}
               onClick={handleStartSample}
-              className="w-full h-11 rounded-full bg-[#E0A458] hover:bg-[#EBB46B] disabled:opacity-65 text-[#1A1206] text-sm font-semibold transition-all hover:-translate-y-px cursor-pointer inline-flex items-center justify-center gap-2"
+              className="w-full min-h-[44px] rounded-full bg-[#E0A458] hover:bg-[#EBB46B] disabled:opacity-65 text-[#1A1206] text-[15px] font-semibold transition-colors cursor-pointer inline-flex items-center justify-center gap-2"
             >
               {loading && <Loader2 className="h-4 w-4 animate-spin" />}
               <span>{loading ? c.sampleLoadingBtn : c.sampleBtn}</span>
             </button>
           </div>
         ) : (
-          <form onSubmit={handleLiveSubmit} className="mt-4 space-y-3.5" noValidate>
+          <form onSubmit={handleLiveSubmit} className="mt-6 space-y-4" noValidate>
+            {needsSignIn && (
+              <div className="rounded-xl bg-amber-950/40 border border-amber-400/35 p-4 text-[13px] text-amber-100">
+                Sign in from the top-right <strong>Sign in</strong> button to run Live Tender Upload, or switch to{' '}
+                <strong>Sample Mode (Demo)</strong>.
+              </div>
+            )}
             <div>
-              <label htmlFor="tk-company" className="block text-xs text-white/80 mb-1">
+              <label htmlFor="tk-company" className="block text-[13px] font-medium text-zinc-300 mb-2">
                 {c.companyLabel}
               </label>
               <input
@@ -400,20 +446,20 @@ export function BidCheckModal({
                 value={companyName}
                 onChange={(e) => setCompanyName(e.target.value)}
                 placeholder={c.companyPlaceholder}
-                className="w-full h-10 rounded-xl bg-white/8 border border-white/15 px-3.5 text-sm text-white placeholder:text-white/40 focus:outline-none focus:border-[#E0A458]"
+                className="w-full min-h-[44px] rounded-xl bg-white/8 border border-white/15 px-4 text-[15px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#E0A458]"
               />
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label htmlFor="tk-district" className="block text-xs text-white/80 mb-1">
+                <label htmlFor="tk-district" className="block text-[13px] font-medium text-zinc-300 mb-2">
                   {c.districtLabel}
                 </label>
                 <select
                   id="tk-district"
                   value={district}
                   onChange={(e) => setDistrict(e.target.value)}
-                  className="w-full h-10 rounded-xl bg-[#18151f] border border-white/15 px-3 text-sm text-white focus:outline-none focus:border-[#E0A458]"
+                  className="w-full min-h-[44px] rounded-xl bg-[#18151f] border border-white/15 px-3 text-[15px] text-white focus:outline-none focus:border-[#E0A458]"
                 >
                   {TN_DISTRICTS.map((d) => (
                     <option key={d} value={d}>
@@ -424,14 +470,14 @@ export function BidCheckModal({
               </div>
 
               <div>
-                <label htmlFor="tk-sector" className="block text-xs text-white/80 mb-1">
+                <label htmlFor="tk-sector" className="block text-[13px] font-medium text-zinc-300 mb-2">
                   {c.sectorLabel}
                 </label>
                 <select
                   id="tk-sector"
                   value={sector}
                   onChange={(e) => setSector(e.target.value)}
-                  className="w-full h-10 rounded-xl bg-[#18151f] border border-white/15 px-3 text-sm text-white focus:outline-none focus:border-[#E0A458]"
+                  className="w-full min-h-[44px] rounded-xl bg-[#18151f] border border-white/15 px-3 text-[15px] text-white focus:outline-none focus:border-[#E0A458]"
                 >
                   {SECTORS.map((s) => (
                     <option key={s} value={s}>
@@ -442,9 +488,9 @@ export function BidCheckModal({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label htmlFor="tk-deadline" className="block text-xs text-white/80 mb-1">
+                <label htmlFor="tk-deadline" className="block text-[13px] font-medium text-zinc-300 mb-2">
                   {c.deadlineLabel}
                 </label>
                 <input
@@ -452,12 +498,12 @@ export function BidCheckModal({
                   type="date"
                   value={deadline}
                   onChange={(e) => setDeadline(e.target.value)}
-                  className="w-full h-10 rounded-xl bg-white/8 border border-white/15 px-3 text-sm text-white focus:outline-none focus:border-[#E0A458] [color-scheme:dark]"
+                  className="w-full min-h-[44px] rounded-xl bg-white/8 border border-white/15 px-3 text-[15px] text-white focus:outline-none focus:border-[#E0A458] [color-scheme:dark]"
                 />
               </div>
 
               <div>
-                <label htmlFor="tk-ref" className="block text-xs text-white/80 mb-1">
+                <label htmlFor="tk-ref" className="block text-[13px] font-medium text-zinc-300 mb-2">
                   {c.tenderRefLabel}
                 </label>
                 <input
@@ -466,16 +512,16 @@ export function BidCheckModal({
                   value={tenderRef}
                   onChange={(e) => setTenderRef(e.target.value)}
                   placeholder={c.tenderRefPlaceholder}
-                  className="w-full h-10 rounded-xl bg-white/8 border border-white/15 px-3.5 text-sm text-white placeholder:text-white/40 focus:outline-none focus:border-[#E0A458]"
+                  className="w-full min-h-[44px] rounded-xl bg-white/8 border border-white/15 px-4 text-[15px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#E0A458]"
                 />
               </div>
             </div>
 
-            <div className="space-y-2.5 pt-1">
+            <div className="space-y-3 pt-2">
               <div>
                 <label
                   htmlFor="tk-tender-pdf"
-                  className="flex items-center justify-between w-full h-10 rounded-xl bg-white/6 border border-dashed border-white/22 px-3.5 text-xs text-white/85 hover:border-[#E0A458]/70 transition-colors cursor-pointer"
+                  className="flex items-center justify-between w-full min-h-[44px] rounded-xl bg-white/6 border border-dashed border-white/22 px-4 text-[13px] font-medium text-zinc-200 hover:border-[#E0A458]/70 transition-colors cursor-pointer"
                 >
                   <span className="truncate pr-2">
                     {tenderPdf ? `${c.tenderPdfLabel}: ${tenderPdf.name}` : `${c.tenderPdfLabel} (.pdf)`}
@@ -497,7 +543,7 @@ export function BidCheckModal({
               <div>
                 <label
                   htmlFor="tk-supplier-zip"
-                  className="flex items-center justify-between w-full h-10 rounded-xl bg-white/6 border border-dashed border-white/22 px-3.5 text-xs text-white/85 hover:border-[#E0A458]/70 transition-colors cursor-pointer"
+                  className="flex items-center justify-between w-full min-h-[44px] rounded-xl bg-white/6 border border-dashed border-white/22 px-4 text-[13px] font-medium text-zinc-200 hover:border-[#E0A458]/70 transition-colors cursor-pointer"
                 >
                   <span className="truncate pr-2">
                     {supplierZip
@@ -521,7 +567,7 @@ export function BidCheckModal({
               <div>
                 <label
                   htmlFor="tk-corrigendum-pdf"
-                  className="flex items-center justify-between w-full h-10 rounded-xl bg-white/4 border border-dashed border-white/16 px-3.5 text-xs text-white/75 hover:border-[#E0A458]/60 transition-colors cursor-pointer"
+                  className="flex items-center justify-between w-full min-h-[44px] rounded-xl bg-white/4 border border-dashed border-white/16 px-4 text-[13px] font-medium text-zinc-300 hover:border-[#E0A458]/60 transition-colors cursor-pointer"
                 >
                   <span className="truncate pr-2">
                     {corrigendumPdf
@@ -542,12 +588,12 @@ export function BidCheckModal({
                 />
               </div>
 
-              <p className="text-[11px] text-white/55">{c.formatHint}</p>
+              <p className="text-[12px] text-zinc-400">{c.formatHint}</p>
             </div>
 
             {error && (
               <div
-                className="flex items-start gap-2 rounded-xl bg-red-950/60 border border-red-400/35 px-3 py-2 text-xs text-red-200"
+                className="flex items-start gap-2 rounded-xl bg-red-950/60 border border-red-400/35 p-4 text-[14px] text-red-200"
                 role="alert"
               >
                 <AlertCircle className="h-4 w-4 shrink-0 text-red-300 mt-0.5" />
@@ -558,7 +604,7 @@ export function BidCheckModal({
             <button
               type="submit"
               disabled={loading}
-              className="w-full h-11 rounded-full bg-[#E0A458] hover:bg-[#EBB46B] disabled:opacity-65 text-[#1A1206] text-sm font-semibold transition-all hover:-translate-y-px cursor-pointer inline-flex items-center justify-center gap-2"
+              className="w-full min-h-[44px] rounded-full bg-[#E0A458] hover:bg-[#EBB46B] disabled:opacity-65 text-[#1A1206] text-[15px] font-semibold transition-colors cursor-pointer inline-flex items-center justify-center gap-2"
             >
               {loading && <Loader2 className="h-4 w-4 animate-spin" />}
               <span>{loading ? c.runningBtn : c.submitBtn}</span>

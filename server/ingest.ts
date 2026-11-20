@@ -2,7 +2,12 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import * as pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs';
 import type { EvidenceSnippet, IngestedDocument, PageContent } from './types.ts';
+
+if (!(globalThis as Record<string, unknown>).pdfjsWorker) {
+  (globalThis as Record<string, unknown>).pdfjsWorker = pdfjsWorker;
+}
 
 export const MAX_PDF_BYTES = 25 * 1024 * 1024; // 25 MB
 export const MAX_ZIP_BYTES = 50 * 1024 * 1024; // 50 MB

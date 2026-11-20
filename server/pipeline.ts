@@ -1,3 +1,4 @@
+import { scanDocumentForPromptInjections } from './guardrails.ts';
 import {
   buildEvidenceSnippets,
   extractPdfPages,
@@ -81,6 +82,24 @@ export async function runLiveAnalysisPipeline(params: {
     warnings.push(
       `Corrigendum "${corrigendumDoc.filename}" page(s) ${corrigendumDoc.scannedPages.join(', ')} appear scanned or low-text.`
     );
+  }
+
+  // Scan all uploaded PDFs for indirect prompt injection attempts before LLM processing
+  const injectionAuditEvents: SessionState['audit_events'] = [];
+  for (const doc of [tenderDoc, ...(corrigendumDoc ? [corrigendumDoc] : []), ...supplierDocs]) {
+    const docInjections = scanDocumentForPromptInjections(doc);
+    for (const inj of docInjections) {
+      warnings.push(
+        `Sentinel isolated indirect prompt-injection text in "${doc.filename}" (p.${inj.pageNumber}: ${inj.categories.join(', ')}). Treated as untrusted document text only.`
+      );
+      injectionAuditEvents.push({
+        id: generateId('aud'),
+        timestamp: new Date().toISOString(),
+        actor: 'sentinel',
+        action: 'prompt_injection_detected',
+        detail: `Detected ${inj.categories.join(', ')} pattern in "${doc.filename}" page ${inj.pageNumber}; isolated from system instructions.`,
+      });
+    }
   }
 
   // 2. Structured Requirement Extraction via Gemini
@@ -183,6 +202,7 @@ export async function runLiveAnalysisPipeline(params: {
           action: 'live_analysis_completed',
           detail: `Analyzed "${tenderDoc.filename}" (${tenderDoc.pageCount}p) and ${supplierDocs.length} supplier PDF(s) via ${getActiveGeminiModel()}.`,
         },
+        ...injectionAuditEvents,
       ],
       warnings: Array.from(new Set(warnings)),
       provider: {
@@ -300,6 +320,23 @@ export async function recheckCorrectedDocumentInSession(params: {
         `Corrected PDF "${correctedDoc.filename}" page(s) ${correctedDoc.scannedPages.join(', ')} appear scanned or low-text.`,
       ])
     );
+  }
+
+  const correctedInjections = scanDocumentForPromptInjections(correctedDoc);
+  for (const inj of correctedInjections) {
+    session.warnings = Array.from(
+      new Set([
+        ...session.warnings,
+        `Sentinel isolated indirect prompt-injection text in "${correctedDoc.filename}" (p.${inj.pageNumber}: ${inj.categories.join(', ')}). Treated as untrusted document text only.`,
+      ])
+    );
+    session.audit_events.push({
+      id: generateId('aud'),
+      timestamp: new Date().toISOString(),
+      actor: 'sentinel',
+      action: 'prompt_injection_detected',
+      detail: `Detected ${inj.categories.join(', ')} pattern in corrected document "${correctedDoc.filename}" page ${inj.pageNumber}; isolated from system instructions.`,
+    });
   }
 
   // Add/append corrected document to authoritative documents & evidence

@@ -104,8 +104,9 @@ export function renderHtmlReadinessReport(session: SessionState): string {
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #18181b; max-width: 1080px; margin: 32px auto; padding: 0 20px; line-height: 1.5; }
     h1, h2 { color: #111827; margin-top: 28px; }
-    .banner { background: #14111f; color: #fff; padding: 20px 24px; border-radius: 12px; border-left: 6px solid #e0a458; }
+    .banner { display: flex; align-items: center; justify-content: space-between; gap: 20px; background: #14111f; color: #fff; padding: 20px 24px; border-radius: 12px; border-left: 6px solid #e0a458; }
     .banner small { color: #e0a458; text-transform: uppercase; letter-spacing: 0.12em; }
+    .seal-badge { background: #ffffff; border-radius: 50%; padding: 4px; width: 92px; height: 92px; flex-shrink: 0; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28); display: flex; align-items: center; justify-content: center; }
     .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 18px 0; background: #f8fafc; padding: 14px; border-radius: 8px; border: 1px solid #e2e8f0; }
     table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
     th, td { border: 1px solid #cbd5e1; padding: 10px; text-align: left; vertical-align: top; }
@@ -120,8 +121,33 @@ export function renderHtmlReadinessReport(session: SessionState): string {
 </head>
 <body>
   <div class="banner">
-    <small>Namma Tender · ${escapeHtml(session.mode)} MODE REPORT (Revision v${escapeHtml(session.revision)})</small>
-    <h1 style="color:#fff;margin:6px 0 0;">Bid Readiness &amp; Rescue Dossier</h1>
+    <div>
+      <small>Namma Tender · ${escapeHtml(session.mode)} MODE REPORT (Revision v${escapeHtml(session.revision)})</small>
+      <h1 style="color:#fff;margin:6px 0 0;">Bid Readiness &amp; Rescue Dossier</h1>
+    </div>
+    <div class="seal-badge" aria-label="Namma Tender Bid Readiness Verified Stamp">
+      <svg viewBox="0 0 180 180" width="84" height="84" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="90" cy="90" r="82" fill="#FFFFFF" stroke="#181512" stroke-width="5.5" />
+        <circle cx="90" cy="90" r="46" stroke="#181512" stroke-width="3.2" />
+        <defs>
+          <path id="sealTopArc" d="M 32,90 A 58,58 0 1,1 148,90" />
+          <path id="sealBottomArc" d="M 24,96 A 66,66 0 0,0 156,96" />
+        </defs>
+        <text fill="#181512" font-size="16.2" font-weight="800" font-family="Arial, sans-serif" letter-spacing="2.2">
+          <textPath href="#sealTopArc" startOffset="50%" text-anchor="middle">NAMMA TENDER</textPath>
+        </text>
+        <text fill="#181512" font-size="15.2" font-weight="800" font-family="Arial, sans-serif" letter-spacing="1.8">
+          <textPath href="#sealBottomArc" startOffset="50%" text-anchor="middle">BID READINESS</textPath>
+        </text>
+        <circle cx="26" cy="92" r="3" fill="#181512" />
+        <circle cx="154" cy="92" r="3" fill="#181512" />
+        <path d="M90 54L91.6 60H88.4L90 54Z" fill="#181512" />
+        <circle cx="90" cy="60.5" r="2.2" fill="#181512" />
+        <path d="M72 80C72.8 66 79 61 90 61C101 61 107.2 66 108 80H72Z" fill="#181512" />
+        <path d="M68 82.5C75 79.5 105 79.5 112 82.5V84.5C105 81.5 75 81.5 68 84.5V82.5Z" fill="#181512" />
+        <path d="M66 102L83 121L125 83L119 78L83 108L72 96.5L66 102Z" fill="#181512" />
+      </svg>
+    </div>
   </div>
 
   <div class="meta">

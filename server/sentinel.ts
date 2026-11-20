@@ -351,8 +351,10 @@ export function isNegatedApprovalCommand(message: string): boolean {
 export function isForcedPassRequest(message: string): boolean {
   const lower = message.toLowerCase();
   return (
-    /\b(mark|set|force|make|change|override|approve)\b.{0,40}\b(as\s+)?(pass|passed|compliant|eligible)\b/i.test(
+    /\b(mark|set|force|make|change|override|approve|treat|pretend|declare)\b.{0,45}\b(as\s+)?(pass|passed|valid|compliant|eligible)\b/i.test(
       lower
-    ) || /\bpass\s+(emd|r\d+)\b/i.test(lower)
+    ) ||
+    /\bpass\s+(emd|r\d+)\b/i.test(lower) ||
+    /\b(skip|bypass)\s+(?:the\s+)?(?:emd|iso|expiry|validation)\s+(?:check|rule)\b/i.test(lower)
   );
 }

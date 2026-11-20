@@ -1,3 +1,4 @@
+import { reminderRequest } from './server/reminder.ts';
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import express, { type NextFunction, type Request, type Response } from 'express';
@@ -6,6 +7,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runGeminiStructuredProbe } from './server/geminiProbe.ts';
 import { handleSessionChatTurn } from './server/chat.ts';
+import {
+  createRateLimiter,
+  isSafeExternalWebhookUrl,
+  isValidOptionalEmail,
+  isValidSessionId,
+  MAX_CHAT_MESSAGE_CHARS,
+  MAX_COMPANY_NAME_CHARS,
+  MAX_NOTE_CHARS,
+  MAX_REF_CHARS,
+  redactSecrets,
+  sanitizeSingleLineInput,
+} from './server/guardrails.ts';
 import { IngestionError, MAX_ZIP_BYTES } from './server/ingest.ts';
 import { getActiveGeminiModel } from './server/llm.ts';
 import {
@@ -20,6 +33,7 @@ import {
 } from './server/sampleData.ts';
 import {
   deleteSession,
+  generateId,
   lookupSession,
   updateSession as updateMemorySession,
   type UpdateSessionResult,
@@ -45,38 +59,73 @@ const upload = multer({
 
 function getIntegrationBoundaries(): IntegrationBoundaries {
   const sarvamReady = Boolean(process.env.SARVAM_API_KEY?.trim());
+  const n8nWebhookUrl = process.env.N8N_WEBHOOK_URL?.trim();
+  const n8nSecret = process.env.AUTOMATION_SHARED_SECRET?.trim();
+  const n8nReady = Boolean(process.env.N8N_REMINDERS_VERIFIED === 'true' && n8nWebhookUrl && n8nSecret && /^https?:\/\//i.test(n8nWebhookUrl));
   return {
-  sarvamVoice: {
-    connected: sarvamReady,
-    purpose: 'Tamil & mixed Tanglish speech-to-text transcription',
-    note: sarvamReady
-      ? 'Sarvam is enabled for server-side Tamil/English transcription. Review the transcript before it is sent.'
-      : 'Sarvam AI access is not configured; browser Web Speech API fallback and editable text input are active.',
-  },
-  n8nAutomation: {
-    connected: Boolean(process.env.AUTOMATION_SHARED_SECRET?.trim()),
-    requiresExplicitAuthorization: true,
-    purpose: 'Authorized external reminders and compliance notifications',
-    note: process.env.AUTOMATION_SHARED_SECRET?.trim()
-      ? 'Authorized n8n dispatch is enabled server-side.'
-      : 'Configure AUTOMATION_SHARED_SECRET to enable authorized n8n dispatch.',
-  },
+    sarvamVoice: {
+      connected: sarvamReady,
+      purpose: 'Tamil & mixed Tanglish speech-to-text and voice playback',
+      note: sarvamReady
+        ? 'Sarvam is enabled for server-side Tamil/English transcription and speech. Review the transcript before it is sent.'
+        : 'Sarvam AI access is not configured; browser Web Speech API fallback and editable text input are active.',
+    },
+    n8nAutomation: {
+      connected: n8nReady,
+      requiresExplicitAuthorization: true,
+      purpose: 'Authorized external reminders and compliance notifications',
+      note: n8nReady
+        ? 'n8n compliance reminder dispatcher is configured. Reminders only send when explicitly authorized by you.'
+        : 'The n8n workflow is prepared. Add N8N_WEBHOOK_URL and AUTOMATION_SHARED_SECRET to enable explicit dispatch.',
+    },
   };
 }
 
-export function createApiRouter() {
+export function applySecurityHeaders(_req: Request, res: Response, next: NextFunction) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), geolocation=(), payment=(), usb=()');
+  res.setHeader('X-XSS-Protection', '0');
+  next();
+}
+
+export function createApiRouter(options?: { maxAiRequestsPerMinute?: number }) {
   const router = express.Router();
+  router.use(applySecurityHeaders);
+  router.use((_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+
+  const aiRateLimiter = createRateLimiter({
+    windowMs: 60_000,
+    maxRequests: options?.maxAiRequestsPerMinute ?? 40,
+  });
+
   const repository = createSessionRepository();
   const liveOwners = new Map<string, string>();
-  const projectUrl = process.env.VITE_SUPABASE_URL;
-  const publishableKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  const projectUrl = (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL)?.trim();
+  const publishableKey = (
+    process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
+    process.env.SUPABASE_ANON_KEY
+  )?.trim();
   const auth = projectUrl && publishableKey
     ? createClient(projectUrl, publishableKey, { auth: { persistSession: false, autoRefreshToken: false } })
     : null;
 
   async function requireUser(req: Request, res: Response, next: NextFunction) {
+    if (!auth) {
+      if (!process.env.VERCEL) {
+        res.locals.ownerId = 'local-dev';
+        next();
+        return;
+      }
+      res.status(401).json({ ok: false, error: 'Sign in to use live bid analysis.' });
+      return;
+    }
     const token = req.get('Authorization')?.match(/^Bearer (\S+)$/i)?.[1];
-    if (!auth || !token) {
+    if (!token) {
       res.status(401).json({ ok: false, error: 'Sign in to use live bid analysis.' });
       return;
     }
@@ -96,6 +145,10 @@ export function createApiRouter() {
   router.use('/sessions/:id', (req, res, next) => {
     const id = req.params.id;
     if (req.method === 'POST' && (id === 'analyze' || id === 'sample')) return next();
+    if (!isValidSessionId(id)) {
+      res.status(400).json({ ok: false, error: 'Invalid session ID format.' });
+      return;
+    }
     const found = lookupSession(id);
     if (repository && !(found.status === 'found' && found.session.mode === 'SAMPLE')) {
       void requireUser(req, res, () => {
@@ -155,6 +208,7 @@ export function createApiRouter() {
       provider: process.env.LLM_PROVIDER || 'gemini',
       model: getActiveGeminiModel(),
       keyConfigured: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()),
+      supabaseConfigured: Boolean(auth),
       integrations: getIntegrationBoundaries(),
     });
   });
@@ -189,7 +243,30 @@ export function createApiRouter() {
     });
   });
 
-  router.post('/voice/transcribe', upload.single('audio'), async (req, res, next) => {
+  router.get('/sessions', requireUser, async (_req, res, next) => {
+    if (!repository) {
+      res.json({ ok: true, sessions: [] });
+      return;
+    }
+    try {
+      const rows = await repository.list(res.locals.ownerId);
+      res.json({
+        ok: true,
+        sessions: rows.map((r) => ({
+          sessionId: r.sessionId,
+          updatedAt: r.updatedAt,
+          companyName: r.state.profile.companyName,
+          tenderReference: r.state.profile.tenderReference,
+          mode: r.state.mode,
+          blockersCount: r.state.validation.filter((v) => v.status !== 'PASS' && v.status !== 'NOT_APPLICABLE').length,
+        })),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/voice/transcribe', aiRateLimiter, upload.single('audio'), async (req, res, next) => {
     try {
       if (!req.file) {
         res.status(400).json({ ok: false, error: 'Audio file is required.' });
@@ -206,7 +283,7 @@ export function createApiRouter() {
     }
   });
 
-  router.post('/voice/speak', async (req, res, next) => {
+  router.post('/voice/speak', aiRateLimiter, async (req, res, next) => {
     try {
       const text = typeof req.body?.text === 'string' ? req.body.text : '';
       const language = req.body?.language === 'en-IN' ? 'en-IN' : 'ta-IN';
@@ -221,10 +298,10 @@ export function createApiRouter() {
     }
   });
 
-  router.post('/gemini/probe', async (req, res) => {
+  router.post('/gemini/probe', aiRateLimiter, async (req, res) => {
     const requestedModel =
       typeof req.body?.model === 'string' && req.body.model.trim()
-        ? req.body.model.trim()
+        ? sanitizeSingleLineInput(req.body.model, 80)
         : getActiveGeminiModel();
     const result = await runGeminiStructuredProbe(requestedModel);
     if (!result.ok) {
@@ -254,6 +331,7 @@ export function createApiRouter() {
   // Live Mode document intake + analysis
   router.post(
     '/sessions/analyze',
+    aiRateLimiter,
     requireUser,
     upload.fields([
       { name: 'tenderPdf', maxCount: 1 },
@@ -267,15 +345,16 @@ export function createApiRouter() {
         const supplierZipFile = files.supplierZip?.[0];
         const corrigendumFile = files.corrigendumPdf?.[0];
 
-        const companyName = String(req.body?.companyName || '').trim();
-        const district = String(req.body?.district || '').trim();
-        const sector = String(req.body?.sector || '').trim();
-        const deadline = String(req.body?.deadline || '').trim();
-        const tenderReference = String(req.body?.tenderReference || '').trim() || undefined;
-        const email = String(req.body?.email || '').trim() || undefined;
+        const companyName = sanitizeSingleLineInput(req.body?.companyName, MAX_COMPANY_NAME_CHARS);
+        const district = sanitizeSingleLineInput(req.body?.district, 80);
+        const sector = sanitizeSingleLineInput(req.body?.sector, 120);
+        const deadline = sanitizeSingleLineInput(req.body?.deadline, 40);
+        const tenderReference =
+          sanitizeSingleLineInput(req.body?.tenderReference, MAX_REF_CHARS) || undefined;
+        const email = sanitizeSingleLineInput(req.body?.email, 254) || undefined;
         const idempotencyKey =
           typeof req.headers['x-idempotency-key'] === 'string'
-            ? req.headers['x-idempotency-key']
+            ? sanitizeSingleLineInput(req.headers['x-idempotency-key'], 128)
             : undefined;
 
         if (!companyName || !district || !sector || !deadline) {
@@ -283,6 +362,10 @@ export function createApiRouter() {
             ok: false,
             error: 'Company name, Tamil Nadu district, sector, and confirmed bid deadline are required.',
           });
+          return;
+        }
+        if (!isValidOptionalEmail(email)) {
+          res.status(400).json({ ok: false, error: 'Please provide a valid email address.' });
           return;
         }
         if (!tenderFile) {
@@ -376,18 +459,26 @@ export function createApiRouter() {
   });
 
   // Grounded chat endpoint
-  router.post('/sessions/:id/chat', async (req, res, next) => {
-    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+  router.post('/sessions/:id/chat', aiRateLimiter, async (req, res, next) => {
+    const rawMessage = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     const languageRaw = req.body?.language;
     const language: ChatLanguage =
       languageRaw === 'Tam' || languageRaw === 'Hin' ? languageRaw : 'Eng';
     const expectedRevision =
       typeof req.body?.revision === 'number' ? req.body.revision : undefined;
 
-    if (!message) {
+    if (!rawMessage) {
       res.status(400).json({ ok: false, error: 'Message text is required.' });
       return;
     }
+    if (rawMessage.length > MAX_CHAT_MESSAGE_CHARS) {
+      res.status(400).json({
+        ok: false,
+        error: `Message exceeds ${MAX_CHAT_MESSAGE_CHARS} character limit.`,
+      });
+      return;
+    }
+    const message = rawMessage;
 
     let chatOutput: Awaited<ReturnType<typeof handleSessionChatTurn>> | undefined;
     const updated = await updateSession(res, req.params.id, expectedRevision, async (draft) => {
@@ -422,6 +513,7 @@ export function createApiRouter() {
       session: updated.session,
       reply: chatOutput?.reply,
       toolUsed: chatOutput?.toolUsed,
+      guardrailBlocked: Boolean(chatOutput?.guardrailBlocked),
       progressSteps: chatOutput?.progressSteps || [],
       citedRequirements: chatOutput?.citedRequirements || [],
       exportReady: Boolean(chatOutput?.exportReady),
@@ -431,9 +523,13 @@ export function createApiRouter() {
   // Explicit human decision / feedback endpoint
   router.post('/sessions/:id/decision', async (req, res, next) => {
     const requirementId =
-      typeof req.body?.requirementId === 'string' ? req.body.requirementId.trim() : undefined;
-    const action = typeof req.body?.action === 'string' ? req.body.action : 'agree';
-    const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
+      typeof req.body?.requirementId === 'string'
+        ? sanitizeSingleLineInput(req.body.requirementId, 32)
+        : undefined;
+    const actionRaw = typeof req.body?.action === 'string' ? req.body.action : 'agree';
+    const action =
+      actionRaw === 'approve' || actionRaw === 'dispute' ? actionRaw : 'agree';
+    const note = sanitizeSingleLineInput(req.body?.note, MAX_NOTE_CHARS);
     const languageRaw = req.body?.language;
     const language: ChatLanguage =
       languageRaw === 'Tam' || languageRaw === 'Hin' ? languageRaw : 'Eng';
@@ -492,6 +588,7 @@ export function createApiRouter() {
   // Upload corrected PDF & rerun affected checks
   router.post(
     '/sessions/:id/correct',
+    aiRateLimiter,
     upload.single('correctedPdf'),
     async (req, res, next) => {
       try {
@@ -568,12 +665,108 @@ export function createApiRouter() {
       return;
     }
 
+    const safeReportId = found.session.sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';"
+    );
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="NammaTender_Report_${found.session.sessionId}.html"`
+      `attachment; filename="NammaTender_Report_${safeReportId}.html"`
     );
     res.send(html);
+  });
+
+  // Explicit-authorization n8n compliance reminder dispatcher (never overrides findings or submits bids)
+  router.post('/sessions/:id/automate', async (req, res, next) => {
+    const webhookUrl = process.env.N8N_WEBHOOK_URL?.trim();
+    const secret = process.env.AUTOMATION_SHARED_SECRET?.trim();
+    if (process.env.N8N_REMINDERS_VERIFIED !== 'true' || !webhookUrl || !secret || !/^https?:\/\//i.test(webhookUrl)) {
+      res.status(503).json({
+        ok: false,
+        error: 'n8n automation webhook is not configured on the server.',
+      });
+      return;
+    }
+    const webhookSafety = isSafeExternalWebhookUrl(webhookUrl);
+    if (!webhookSafety.safe) {
+      res.status(400).json({
+        ok: false,
+        error: webhookSafety.reason || 'Webhook URL violates SSRF security policy.',
+      });
+      return;
+    }
+    if (req.body?.confirmDispatch !== true) {
+      res.status(400).json({
+        ok: false,
+        error: 'Explicit user authorization (confirmDispatch: true) is required before dispatching external reminders.',
+      });
+      return;
+    }
+
+    const recipientEmailRaw =
+      typeof req.body?.recipientEmail === 'string'
+        ? sanitizeSingleLineInput(req.body.recipientEmail, 254)
+        : undefined;
+    if (!isValidOptionalEmail(recipientEmailRaw)) {
+      res.status(400).json({ ok: false, error: 'Invalid recipient email address.' });
+      return;
+    }
+
+    const found = requestSession(req, res);
+    if (found.status === 'missing') {
+      res.status(404).json({ ok: false, error: 'Session not found.' });
+      return;
+    }
+    if (found.status === 'expired') {
+      res.status(410).json({ ok: false, error: 'Session expired.' });
+      return;
+    }
+
+    const session = found.session;
+    try {
+      const upstream = await fetch(webhookUrl, {
+        ...reminderRequest(session.sessionId, session.revision, secret),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!upstream.ok) {
+        res.status(502).json({
+          ok: false,
+          error: `n8n webhook returned HTTP ${upstream.status}.`,
+        });
+        return;
+      }
+
+      const updated = await updateSession(res, req.params.id, undefined, (draft) => {
+        draft.audit_events.push({
+          id: generateId('aud'),
+          timestamp: new Date().toISOString(),
+          actor: 'user',
+          action: 'n8n_reminder_dispatched',
+          detail: `Dispatched authorized compliance reminder for ${draft.plan.length} rescue item(s) to n8n webhook.`,
+        });
+      }).catch((err: unknown) => {
+        next(err);
+        return null;
+      });
+
+      if (!updated || !updated.ok) {
+        res.json({ ok: true, session, message: 'n8n returned HTTP ' + upstream.status + '. Delivery unconfirmed.' });
+        return;
+      }
+
+      res.json({
+        ok: true,
+        session: updated.session,
+        message: 'n8n returned HTTP ' + upstream.status + '. Delivery unconfirmed.',
+      });
+    } catch (err) {
+      res.status(502).json({
+        ok: false,
+        error: err instanceof Error ? `n8n dispatch failed: ${err.message}` : 'n8n dispatch failed.',
+      });
+    }
   });
 
   // Error handler for upload, ingestion, and pipeline failures
@@ -595,7 +788,7 @@ export function createApiRouter() {
       return;
     }
     const clean =
-      err instanceof Error ? err.message.replace(/AIza[0-9A-Za-z\-_]{20,}/g, '[REDACTED]') : 'Server error';
+      err instanceof Error ? redactSecrets(err.message) : 'Server error';
     res.status(500).json({ ok: false, error: clean });
   });
 
@@ -604,6 +797,8 @@ export function createApiRouter() {
 
 export async function startServer() {
   const app = express();
+  app.disable('x-powered-by');
+  app.use(applySecurityHeaders);
   app.use(express.json({ limit: '2mb' }));
   app.use('/api', createApiRouter());
 

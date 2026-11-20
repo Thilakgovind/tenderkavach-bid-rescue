@@ -155,8 +155,8 @@ export function validateRequirements(params: {
         return {
           requirementId: req.id,
           status: 'MISSING',
-          explanation: `Udyam certificate (${doc.filename}, p.${match.page}) was found, but Udyam alone does not prove EMD exemption. Submit the signed MSME EMD Exemption Declaration or EMD payment proof.`,
-          explanationTa: `உத்யம் சான்றிதழ் (${doc.filename}) உள்ளது; ஆனால் அது மட்டும் EMD விலக்குக்குப் போதாது. கையொப்பமிட்ட EMD விலக்கு உறுதிமொழி அல்லது EMD கட்டண ரசீது தேவை.`,
+          explanation: `The cited evidence in ${doc.filename} (p.${match.page}) does not establish EMD exemption. Submit the signed MSME EMD Exemption Declaration or EMD payment proof.`,
+          explanationTa: `${doc.filename} (பக்கம் ${match.page}) ஆவணத்தில் உள்ள சான்று EMD விலக்கை உறுதிப்படுத்தவில்லை. கையொப்பமிட்ட EMD விலக்கு உறுதிமொழி அல்லது EMD கட்டண ரசீது தேவை.`,
           checksRun,
           sentinelFlags,
           lastCheckedAt: timestamp,

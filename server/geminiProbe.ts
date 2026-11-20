@@ -1,8 +1,7 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { getActiveGeminiModel, sanitizeLlmError } from './llm.ts';
-
+import { auditModelOutputText } from './guardrails.ts';
 const PROBE_TIMEOUT_MS = 20_000;
-
 interface ProbePayload {
   status: 'PASS' | 'FAIL' | 'REVIEW_REQUIRED';
   summary: string;
@@ -95,7 +94,10 @@ export async function runGeminiStructuredProbe(modelName = getActiveGeminiModel(
       ok: true as const,
       model: modelName,
       latencyMs,
-      data: parsed,
+      data: {
+        ...parsed,
+        summary: auditModelOutputText(parsed.summary).cleanText,
+      },
     };
   } catch (err) {
     const latencyMs = Date.now() - startedAt;

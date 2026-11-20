@@ -1,3 +1,4 @@
+import { evaluateChatGuardrail, MAX_CHAT_MESSAGE_CHARS, normalizeUntrustedUnicode } from './guardrails.ts';
 import { selectChatToolWithGemini } from './llm.ts';
 import { generateId } from './sessionStore.ts';
 import { executeGroundedTool } from './tools.ts';
@@ -39,18 +40,43 @@ export async function handleSessionChatTurn(params: {
   progressSteps: string[];
   citedRequirements: string[];
   exportReady?: boolean;
+  guardrailBlocked?: boolean;
 }> {
   const { session, message, language } = params;
-  const trimmed = message.trim();
+  const trimmed = normalizeUntrustedUnicode(message).trim().slice(0, MAX_CHAT_MESSAGE_CHARS + 50);
   const userTurnId = generateId('msg');
   const nowIso = new Date().toISOString();
 
   session.chatHistory.push({
     id: userTurnId,
     role: 'user',
-    text: trimmed,
+    text: trimmed.slice(0, 500),
     timestamp: nowIso,
   });
+
+  // Pre-LLM Guardrail: block prompt injection, system prompt extraction, jailbreaks, script payloads
+  const guardrail = evaluateChatGuardrail(trimmed, session, language);
+  if (guardrail.blocked) {
+    const refusalReply =
+      guardrail.reply ||
+      'Refused by Sentinel Guardrail: prompt injection or bypass instructions cannot run.';
+    session.chatHistory.push({
+      id: generateId('msg'),
+      role: 'assistant',
+      text: refusalReply,
+      timestamp: new Date().toISOString(),
+      toolUsed: 'sentinel_prompt_guard',
+      progressSteps: ['Sentinel Prompt Guard checked input integrity'],
+      citedRequirements: guardrail.citedRequirements,
+    });
+    return {
+      reply: refusalReply,
+      toolUsed: 'sentinel_prompt_guard',
+      progressSteps: ['Sentinel Prompt Guard checked input integrity'],
+      citedRequirements: guardrail.citedRequirements,
+      guardrailBlocked: true,
+    };
+  }
 
   // Always check deterministic fallback + allow Gemini tool selection when available
   const fallback = deterministicToolFallback(trimmed);
